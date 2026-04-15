@@ -116,16 +116,39 @@ public class PythonAIService
     }
 
     // --- Documents ---
-    public async Task<string> UploadDocumentAsync(Stream fileStream, string fileName)
+    /// <summary>
+    /// Upload a document to the Python AI service. The Python endpoint now returns SSE events
+    /// for progress tracking. This method reads the stream, forwarding progress events via the
+    /// optional callback, and returns the final result JSON.
+    /// </summary>
+    public async Task<string> UploadDocumentAsync(Stream fileStream, string fileName, Func<string, Task>? onProgress = null)
     {
         using var content = new MultipartFormDataContent();
         var fileContent = new StreamContent(fileStream);
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(fileContent, "file", fileName);
 
-        var resp = await _http.PostAsync("/documents/upload", content);
-        resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadAsStringAsync();
+        using var response = await _http.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "/documents/upload") { Content = content },
+            HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        using var stream = await response.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+
+        string lastEvent = "{}";
+        while (!reader.EndOfStream)
+        {
+            var line = await reader.ReadLineAsync();
+            if (line == null) break;
+            if (!line.StartsWith("data: ")) continue;
+
+            var json = line["data: ".Length..];
+            lastEvent = json;
+            if (onProgress != null) await onProgress(json);
+        }
+
+        return lastEvent;
     }
 
     public async Task<string> ListDocumentsAsync()

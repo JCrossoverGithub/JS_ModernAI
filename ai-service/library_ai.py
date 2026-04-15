@@ -261,6 +261,67 @@ User's Research Question: {question}
         self.vector_db.add_documents(chunked_docs)
         return {"success": True, "chunks": len(chunked_docs), "filename": original_filename}
 
+    def ingest_document_stream(self, file_path: str, original_filename: str) -> Generator[dict, None, None]:
+        """Load, chunk, and embed a document in batches, yielding progress events.
+
+        Yields event dicts:
+          {"type": "progress", "message": "...", "percent": 0-100}
+          {"type": "done", "success": True, "chunks": N, "filename": "..."}
+          {"type": "error", "error": "..."}
+        """
+        if not os.path.exists(file_path):
+            yield {"type": "error", "error": f"File not found: {file_path}"}
+            return
+
+        ext = os.path.splitext(original_filename)[1].lower()
+        if ext == ".pdf":
+            loader = PyPDFLoader(file_path)
+        elif ext == ".txt":
+            loader = TextLoader(file_path, autodetect_encoding=True)
+        elif ext in [".docx", ".doc"]:
+            loader = Docx2txtLoader(file_path)
+        else:
+            yield {"type": "error", "error": f"Unsupported file type: {ext}"}
+            return
+
+        yield {"type": "progress", "message": "Parsing document...", "percent": 5}
+
+        try:
+            raw_docs = loader.load()
+        except Exception as e:
+            yield {"type": "error", "error": f"Failed to parse document: {e}"}
+            return
+
+        if not raw_docs:
+            yield {"type": "error", "error": "File is empty."}
+            return
+
+        yield {"type": "progress", "message": f"Parsed {len(raw_docs)} pages. Chunking...", "percent": 15}
+
+        chunked_docs = RecursiveCharacterTextSplitter(
+            chunk_size=1000, chunk_overlap=200
+        ).split_documents(raw_docs)
+
+        for doc in chunked_docs:
+            doc.metadata["document_name"] = original_filename
+
+        total = len(chunked_docs)
+        batch_size = 50
+        yield {"type": "progress", "message": f"Embedding {total} chunks...", "percent": 20}
+
+        for i in range(0, total, batch_size):
+            batch = chunked_docs[i : i + batch_size]
+            self.vector_db.add_documents(batch)
+            done_count = min(i + batch_size, total)
+            pct = 20 + int(80 * done_count / total)
+            yield {
+                "type": "progress",
+                "message": f"Embedded {done_count}/{total} chunks...",
+                "percent": pct,
+            }
+
+        yield {"type": "done", "success": True, "chunks": total, "filename": original_filename}
+
     def remove_document(self, filename: str) -> bool:
         """Remove all chunks belonging to a document. Returns True if found and deleted."""
         existing = self.vector_db.get(where={"document_name": filename})

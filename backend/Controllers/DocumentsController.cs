@@ -22,14 +22,25 @@ public class DocumentsController : ControllerBase
 
     [HttpPost("upload")]
     [DisableRequestSizeLimit]
-    public async Task<IActionResult> Upload(IFormFile file)
+    public async Task Upload(IFormFile file)
     {
         if (file == null || file.Length == 0)
-            return BadRequest(new { error = "No file provided." });
+        {
+            Response.StatusCode = 400;
+            await Response.WriteAsync("{\"error\":\"No file provided.\"}");
+            return;
+        }
+
+        Response.ContentType = "text/event-stream";
+        Response.Headers["Cache-Control"] = "no-cache";
+        Response.Headers["Connection"] = "keep-alive";
 
         using var stream = file.OpenReadStream();
-        var result = await _ai.UploadDocumentAsync(stream, file.FileName);
-        return Content(result, "application/json");
+        await _ai.UploadDocumentAsync(stream, file.FileName, async (json) =>
+        {
+            await Response.WriteAsync($"data: {json}\n\n");
+            await Response.Body.FlushAsync();
+        });
     }
 
     [HttpGet]

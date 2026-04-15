@@ -80,7 +80,10 @@ export async function clearBuffer() {
 }
 
 // --- Documents ---
-export async function uploadDocument(file: File) {
+export async function uploadDocument(
+  file: File,
+  onProgress?: (message: string, percent: number) => void
+): Promise<{ success: boolean; chunks: number; filename: string }> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${API_BASE}/documents/upload`, {
@@ -92,7 +95,35 @@ export async function uploadDocument(file: File) {
     const err = await res.json().catch(() => ({ error: "Upload failed" }));
     throw new Error(err.detail || err.error || "Upload failed");
   }
-  return res.json();
+
+  // The endpoint now returns SSE events for progress tracking
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  let lastResult: any = {};
+
+  if (reader) {
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const event = JSON.parse(line.slice(6));
+        if (event.type === "progress") {
+          onProgress?.(event.message, event.percent);
+        } else if (event.type === "done") {
+          lastResult = event;
+        } else if (event.type === "error") {
+          throw new Error(event.error);
+        }
+      }
+    }
+  }
+
+  return lastResult;
 }
 
 export async function listDocuments(): Promise<{ documents: string[] }> {

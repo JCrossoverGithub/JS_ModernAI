@@ -221,6 +221,8 @@ function FactsPanel({ onClose }: { onClose: () => void }) {
 function DocsPanel({ onClose }: { onClose: () => void }) {
   const [docs, setDocs] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
+  const [uploadPercent, setUploadPercent] = useState(0);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
@@ -242,13 +244,20 @@ function DocsPanel({ onClose }: { onClose: () => void }) {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadProgress("Uploading file...");
+    setUploadPercent(0);
     try {
-      await uploadDocument(file);
+      await uploadDocument(file, (message, percent) => {
+        setUploadProgress(message);
+        setUploadPercent(percent);
+      });
       load();
     } catch (err: any) {
       alert(err.message);
     } finally {
       setUploading(false);
+      setUploadProgress("");
+      setUploadPercent(0);
       e.target.value = "";
     }
   };
@@ -279,7 +288,7 @@ function DocsPanel({ onClose }: { onClose: () => void }) {
         <label className="block cursor-pointer">
           <div className="flex items-center justify-center gap-2 px-4 py-3 border border-dashed border-indigo-500/30 bg-indigo-500/5 rounded-xl text-indigo-300 text-sm hover:bg-indigo-500/10 hover:border-indigo-500/50 transition-all">
             <Upload size={15} />
-            {uploading ? "Uploading…" : "Upload PDF, TXT, or DOCX"}
+            {uploading ? "Processing…" : "Upload PDF, TXT, or DOCX"}
           </div>
           <input
             type="file"
@@ -289,6 +298,17 @@ function DocsPanel({ onClose }: { onClose: () => void }) {
             className="hidden"
           />
         </label>
+        {uploading && (
+          <div className="mt-2 space-y-1.5">
+            <div className="h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+                style={{ width: `${uploadPercent}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-slate-400 text-center">{uploadProgress}</p>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">

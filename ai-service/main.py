@@ -173,6 +173,7 @@ def clear_buffer(req: UserIdRequest, ai: LibraryAI = Depends(get_ai)):
 async def upload_document(file: UploadFile = File(...), ai: LibraryAI = Depends(get_ai)):
     """Upload a document file (PDF/TXT/DOCX) to be chunked, embedded, and stored.
 
+    Streams progress events as SSE so large documents don't timeout.
     The file is saved to a temp directory with a UUID prefix to prevent collisions,
     processed by the AI engine, then the temp file is deleted.
     """
@@ -185,18 +186,17 @@ async def upload_document(file: UploadFile = File(...), ai: LibraryAI = Depends(
     with open(save_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    result = ai.ingest_document(save_path, file.filename)
+    def event_generator():
+        try:
+            for event in ai.ingest_document_stream(save_path, file.filename):
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            try:
+                os.remove(save_path)
+            except OSError:
+                pass
 
-    # Clean up temp file
-    try:
-        os.remove(save_path)
-    except OSError:
-        pass
-
-    if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["error"])
-
-    return result
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/documents")
