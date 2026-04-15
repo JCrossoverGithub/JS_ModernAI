@@ -92,7 +92,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpClient<PythonAIService>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["PythonAI:BaseUrl"] ?? "http://localhost:8100");
-    client.Timeout = TimeSpan.FromMinutes(5); // LLM responses can be slow
+    client.Timeout = TimeSpan.FromMinutes(10); // Research mode: 2 LLM calls + API searches
 });
 
 // --- SignalR + Controllers ---

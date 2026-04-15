@@ -39,18 +39,24 @@ app.add_middleware(
 )
 
 # --- Singleton AI instance ---
-# Lazy-initialized on first request to avoid slow startup.
-# The LibraryAI constructor downloads the embedding model and connects to ChromaDB.
+# Eagerly initialized at startup so the first request isn't delayed
+# by embedding model download / load.
 _ai: Optional[LibraryAI] = None
+
+
+@app.on_event("startup")
+def _init_ai():
+    """Pre-load the AI engine (embedding model + ChromaDB) at server start."""
+    global _ai
+    chroma_dir = os.getenv("CHROMA_DIR", "./chroma_db")
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    _ai = LibraryAI(chroma_dir=chroma_dir, ollama_base_url=ollama_url)
 
 
 def get_ai() -> LibraryAI:
     """FastAPI dependency that returns the singleton LibraryAI instance."""
-    global _ai
     if _ai is None:
-        chroma_dir = os.getenv("CHROMA_DIR", "./chroma_db")
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        _ai = LibraryAI(chroma_dir=chroma_dir, ollama_base_url=ollama_url)
+        raise RuntimeError("AI engine not initialized")
     return _ai
 
 

@@ -123,6 +123,9 @@ Search queries:"""
         # --- Research: synthesis from papers ---
         research_template = """You are an expert academic research analyst synthesizing findings from scientific papers.
 
+RECENT CONVERSATION:
+{recent_history}
+
 PAPERS FOUND:
 {papers_context}
 
@@ -134,6 +137,7 @@ INSTRUCTIONS:
 - Include specific numbers, metrics, benchmarks, and technical details from paper abstracts.
 - Compare and contrast different approaches across papers.
 - If papers only partially cover the topic, clearly note what gaps remain.
+- Use the recent conversation to understand context, follow-up references, and pronouns.
 - Aim for 400-800 words. Be thorough but concise.
 - Do NOT invent facts not present in the papers.
 
@@ -589,6 +593,7 @@ User's Research Question: {question}
                 yield {"type": "status", "message": "Synthesizing web findings..."}
                 for chunk in self.research_chain.stream({
                     "question": query,
+                    "recent_history": recent_history_str,
                     "papers_context": (
                         "No academic database papers were found. "
                         "Synthesize from these web search results instead:\n\n"
@@ -639,7 +644,7 @@ User's Research Question: {question}
         # 7. Stream LLM synthesis
         ai_answer = ""
         for chunk in self.research_chain.stream(
-            {"question": query, "papers_context": papers_context}
+            {"question": query, "recent_history": recent_history_str, "papers_context": papers_context}
         ):
             ai_answer += chunk
             yield {"type": "token", "content": chunk}
