@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+bin/
+obj/
+
+# Build outputs
+dist/
+publish/
+
+# Data
+*.db
+chroma_db/
+uploads/
+
+# Environment
+.env
+.env.local
+appsettings.Development.json

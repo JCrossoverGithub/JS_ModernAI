@@ -1,0 +1,52 @@
+services:
+  # --- React Frontend (nginx in prod, dev server in dev) ---
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # --- .NET Backend (API Gateway + Auth + SignalR) ---
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - ConnectionStrings__DefaultConnection=Data Source=/data/app.db
+      - Jwt__Key=Q7mX2pL9vNc4Rk8sT1dF6jHb3WyZu5AeG0qVrM2nCx7Kp9LtSd4Jf8hBw1YzE6uN
+      - Jwt__Issuer=LibraryAI
+      - Jwt__Audience=LibraryAI-Client
+      - Jwt__ExpirationMinutes=1440
+      - PythonAI__BaseUrl=http://ai-service:8100
+      - AllowedOrigins=http://localhost:3000,http://localhost:5173
+    volumes:
+      - backend-data:/data
+    depends_on:
+      - ai-service
+
+  # --- Python AI Service (FastAPI + LangChain + Ollama client) ---
+  ai-service:
+    build: ./ai-service
+    ports:
+      - "8100:8100"
+    environment:
+      - CHROMA_DIR=/data/chroma_db
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - CORS_ORIGIN=http://backend:5000
+      - UPLOAD_DIR=/data/uploads
+      - EMBED_DEVICE=cpu
+    volumes:
+      - ai-data:/data
+    # For GPU access (NVIDIA), uncomment:
+    deploy:
+     resources:
+      reservations:
+       devices:
+        - driver: nvidia
+          count: 1
+          capabilities: [gpu]
+
+volumes:
+  backend-data:
+  ai-data:
