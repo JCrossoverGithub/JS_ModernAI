@@ -23,6 +23,21 @@ import PaperResults from "./PaperResults";
 import WelcomeScreen from "./WelcomeScreen";
 import type { Message, Conversation, SearchMode, Paper } from "../types";
 
+/**
+ * Replace numbered citations like [1], [2] in the text with markdown links
+ * pointing to the paper's download URL (or view URL as fallback).
+ */
+function linkifyCitations(content: string, papers: Paper[]): string {
+  return content.replace(/\[(\d+)\]/g, (match, numStr) => {
+    const idx = parseInt(numStr, 10) - 1;
+    if (idx < 0 || idx >= papers.length) return match;
+    const paper = papers[idx];
+    const url = paper.downloadUrl || paper.url;
+    if (!url) return match;
+    return `[\\[${numStr}\\]](${url})`;
+  });
+}
+
 interface ChatWindowProps {
   conversation: Conversation | null;
   mode: SearchMode;
@@ -123,6 +138,7 @@ export default function ChatWindow({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamingMsgIdRef = useRef<string | null>(null);
+  const pendingPapersRef = useRef<Paper[] | null>(null);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -166,6 +182,7 @@ export default function ChatWindow({
           role: "assistant",
           content,
           timestamp: Date.now(),
+          papers: pendingPapersRef.current || undefined,
         });
       }
     },
@@ -175,7 +192,15 @@ export default function ChatWindow({
     },
     onPapers: (papers) => {
       if (!conversation) return;
-      onUpdateLastMessage(conversation.id, (m) => ({ ...m, papers }));
+      // Store papers for when the assistant message is created
+      pendingPapersRef.current = papers;
+      // If assistant message already exists, attach papers to it
+      const id = streamingMsgIdRef.current;
+      if (id) {
+        onUpdateLastMessage(conversation.id, (m) =>
+          m.id === id ? { ...m, papers } : m
+        );
+      }
     },
     onStatus: (message) => {
       if (!conversation) return;
@@ -189,6 +214,7 @@ export default function ChatWindow({
     onDone: () => {
       setIsStreaming(false);
       streamingMsgIdRef.current = null;
+      pendingPapersRef.current = null;
     },
   });
 
@@ -358,7 +384,13 @@ export default function ChatWindow({
                     </p>
                   ) : (
                     <div className="text-sm text-slate-200 leading-relaxed">
-                      <MarkdownRenderer content={msg.content} />
+                      <MarkdownRenderer
+                        content={
+                          msg.papers && msg.papers.length > 0
+                            ? linkifyCitations(msg.content, msg.papers)
+                            : msg.content
+                        }
+                      />
                     </div>
                   )}
 

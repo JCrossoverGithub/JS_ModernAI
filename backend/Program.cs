@@ -96,7 +96,11 @@ builder.Services.AddHttpClient<PythonAIService>(client =>
 });
 
 // --- SignalR + Controllers ---
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    options.ClientTimeoutInterval = TimeSpan.FromMinutes(10);
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+});
 builder.Services.AddControllers();
 
 // --- File upload limits ---

@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  FileText,
   Download,
   ExternalLink,
   ChevronDown,
@@ -12,7 +11,7 @@ import {
 } from "lucide-react";
 import type { Paper } from "../types";
 
-function PaperCard({ paper, index }: { paper: Paper; index: number }) {
+function PaperCard({ paper, index, number }: { paper: Paper; index: number; number: number }) {
   const [expanded, setExpanded] = useState(false);
 
   const authorsStr =
@@ -29,7 +28,7 @@ function PaperCard({ paper, index }: { paper: Paper; index: number }) {
         {/* Title + links */}
         <div className="flex items-start gap-3 mb-2">
           <div className="w-7 h-7 rounded-lg bg-indigo-500/10 flex items-center justify-center shrink-0 mt-0.5">
-            <FileText size={13} className="text-indigo-400" />
+            <span className="text-[11px] font-bold text-indigo-400">{number}</span>
           </div>
           <div className="flex-1 min-w-0">
             <h4 className="text-sm font-medium text-white leading-snug">
@@ -97,18 +96,18 @@ function PaperCard({ paper, index }: { paper: Paper; index: number }) {
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 pl-10 mt-3">
-          {paper.downloadUrl && (
+          {(paper.downloadUrl || paper.url) && (
             <a
-              href={paper.downloadUrl}
+              href={paper.downloadUrl || paper.url}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/20 hover:border-indigo-500/40 text-indigo-300 rounded-lg text-xs font-medium transition-all active:scale-95"
             >
               <Download size={12} />
-              Download PDF
+              {paper.downloadUrl ? "Download PDF" : "Open Paper"}
             </a>
           )}
-          {paper.url && (
+          {paper.url && paper.downloadUrl && (
             <a
               href={paper.url}
               target="_blank"
@@ -142,7 +141,7 @@ export default function PaperResults({ papers }: { papers: Paper[] }) {
 
       <div className="space-y-2">
         {displayed.map((paper, i) => (
-          <PaperCard key={`${paper.title}-${i}`} paper={paper} index={i} />
+          <PaperCard key={`${paper.title}-${i}`} paper={paper} index={i} number={i + 1} />
         ))}
       </div>
 

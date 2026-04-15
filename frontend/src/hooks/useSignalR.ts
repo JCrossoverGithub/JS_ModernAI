@@ -30,6 +30,10 @@ export function useSignalR(callbacks: Callbacks) {
       .configureLogging(LogLevel.Warning)
       .build();
 
+    // Allow long-running research queries without disconnect
+    conn.serverTimeoutInMilliseconds = 10 * 60 * 1000;
+    conn.keepAliveIntervalInMilliseconds = 15 * 1000;
+
     conn.on("ReceiveEvent", (raw: string) => {
       const e: ChatEvent = JSON.parse(raw);
       switch (e.type) {
@@ -40,6 +44,7 @@ export function useSignalR(callbacks: Callbacks) {
           cbRef.current.onSources(e.sources || []);
           break;
         case "papers":
+          console.log("[papers event]", e.papers);
           cbRef.current.onPapers(e.papers || []);
           break;
         case "status":

@@ -130,7 +130,7 @@ INSTRUCTIONS:
 - Write a comprehensive, well-structured research overview that answers the user's question.
 - Use markdown formatting with clear section headers (##).
 - Organize into sections like: ## Overview, ## Key Findings, ## Technical Approaches, ## Challenges & Open Problems, ## Future Directions
-- Reference specific papers using [Author et al., Year] format when citing findings.
+- Reference specific papers using their number in square brackets, e.g. [1], [2], [3]. These numbers correspond to the paper numbers listed above.
 - Include specific numbers, metrics, benchmarks, and technical details from paper abstracts.
 - Compare and contrast different approaches across papers.
 - If papers only partially cover the topic, clearly note what gaps remain.
