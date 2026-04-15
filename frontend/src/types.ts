@@ -60,3 +60,26 @@ export const SEARCH_MODES: ModeInfo[] = [
   { value: "web", label: "Web", description: "Internet search" },
   { value: "research", label: "Research", description: "Academic papers" },
 ];
+
+// ── Research source configuration ──
+export interface ResearchSource {
+  id: string;
+  name: string;
+  category: "academic" | "discovery";
+  description: string;
+}
+
+export const RESEARCH_SOURCES: ResearchSource[] = [
+  { id: "semantic_scholar", name: "Semantic Scholar", category: "academic", description: "200M+ papers with citation data" },
+  { id: "arxiv", name: "arXiv", category: "academic", description: "Open-access preprints" },
+  { id: "openalex", name: "OpenAlex", category: "academic", description: "Open catalog of scholarly works" },
+  { id: "pubmed", name: "PubMed", category: "academic", description: "Biomedical & life sciences" },
+  { id: "core", name: "CORE", category: "academic", description: "200M+ open-access articles" },
+  { id: "crossref", name: "CrossRef", category: "academic", description: "DOI metadata & references" },
+  { id: "europe_pmc", name: "Europe PMC", category: "academic", description: "Biomedical full-text access" },
+  { id: "papers_with_code", name: "Papers With Code", category: "discovery", description: "ML papers + implementations" },
+  { id: "duckduckgo", name: "DuckDuckGo", category: "discovery", description: "General web search" },
+  { id: "wikipedia", name: "Wikipedia", category: "discovery", description: "Encyclopedia background" },
+];
+
+export const DEFAULT_RESEARCH_SOURCES = ["semantic_scholar", "arxiv", "openalex"];

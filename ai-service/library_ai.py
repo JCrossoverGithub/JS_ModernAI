@@ -138,7 +138,7 @@ INSTRUCTIONS:
 - Compare and contrast different approaches across papers.
 - If papers only partially cover the topic, clearly note what gaps remain.
 - Use the recent conversation to understand context, follow-up references, and pronouns.
-- Aim for 400-800 words. Be thorough but concise.
+- Be thorough but concise.
 - Do NOT invent facts not present in the papers.
 
 User's Research Question: {question}
@@ -558,28 +558,367 @@ User's Research Question: {question}
             logger.error("OpenAlex search failed: %s", e)
         return papers
 
+    # ── PubMed (NCBI E-utilities) ────────────────────────────────────
+    def _search_pubmed(self, query: str, limit: int = 8) -> List[dict]:
+        """Search PubMed for biomedical literature."""
+        import xml.etree.ElementTree as ET
+
+        papers = []
+        try:
+            # Step 1: search for IDs
+            search_resp = httpx.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                params={"db": "pubmed", "term": query, "retmax": limit, "sort": "relevance"},
+                timeout=15.0,
+            )
+            if search_resp.status_code != 200:
+                logger.warning("PubMed search %d", search_resp.status_code)
+                return papers
+
+            root = ET.fromstring(search_resp.text)
+            ids = [id_el.text for id_el in root.findall(".//Id") if id_el.text]
+            if not ids:
+                return papers
+
+            # Step 2: fetch summaries
+            fetch_resp = httpx.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+                params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
+                timeout=15.0,
+            )
+            logger.info("PubMed [%s]: %d ids, fetch %d", query, len(ids), fetch_resp.status_code)
+
+            if fetch_resp.status_code == 200:
+                result = fetch_resp.json().get("result", {})
+                for pmid in ids:
+                    doc = result.get(pmid)
+                    if not doc or not isinstance(doc, dict):
+                        continue
+                    authors = [
+                        a.get("name", "")
+                        for a in (doc.get("authors") or [])[:5]
+                    ]
+                    pub_date = doc.get("pubdate", "")
+                    year = None
+                    if pub_date and pub_date[:4].isdigit():
+                        year = int(pub_date[:4])
+                    papers.append({
+                        "title": doc.get("title", "Untitled"),
+                        "authors": authors,
+                        "year": year,
+                        "abstract": "",
+                        "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                        "venue": doc.get("fulljournalname", "") or doc.get("source", ""),
+                        "citationCount": 0,
+                        "downloadUrl": None,
+                    })
+        except Exception as e:
+            logger.error("PubMed search failed: %s", e)
+        return papers
+
+    # ── CORE (core.ac.uk) ────────────────────────────────────────────
+    def _search_core(self, query: str, limit: int = 8) -> List[dict]:
+        """Search CORE for open-access research outputs."""
+        papers = []
+        try:
+            resp = httpx.get(
+                "https://api.core.ac.uk/v3/search/works",
+                params={"q": query, "limit": limit},
+                headers={"User-Agent": "LibraryAI/1.0"},
+                timeout=15.0,
+            )
+            logger.info("CORE [%s]: %d", query, resp.status_code)
+
+            if resp.status_code == 200:
+                for item in resp.json().get("results", []):
+                    authors = [
+                        a.get("name", "") for a in (item.get("authors") or [])[:5]
+                    ]
+                    year = item.get("yearPublished")
+                    dl = None
+                    for link in (item.get("links") or []):
+                        if link.get("type") == "download":
+                            dl = link.get("url")
+                            break
+                    if not dl:
+                        dl = item.get("downloadUrl")
+                    papers.append({
+                        "title": item.get("title", "Untitled") or "Untitled",
+                        "authors": authors,
+                        "year": year,
+                        "abstract": (item.get("abstract") or "")[:500],
+                        "url": item.get("sourceFulltextUrls", [None])[0]
+                              or item.get("identifiers", [None])[0]
+                              or "",
+                        "venue": item.get("publisher", "") or "",
+                        "citationCount": item.get("citationCount", 0) or 0,
+                        "downloadUrl": dl,
+                    })
+            else:
+                logger.warning("CORE %d: %s", resp.status_code, resp.text[:300])
+        except Exception as e:
+            logger.error("CORE search failed: %s", e)
+        return papers
+
+    # ── CrossRef ─────────────────────────────────────────────────────
+    def _search_crossref(self, query: str, limit: int = 8) -> List[dict]:
+        """Search CrossRef for DOI metadata."""
+        papers = []
+        try:
+            resp = httpx.get(
+                "https://api.crossref.org/works",
+                params={
+                    "query": query,
+                    "rows": limit,
+                    "sort": "relevance",
+                    "select": "title,author,published-print,published-online,"
+                              "container-title,is-referenced-by-count,DOI,link",
+                },
+                headers={
+                    "User-Agent": "LibraryAI/1.0 (mailto:research@libraryai.dev)",
+                },
+                timeout=15.0,
+            )
+            logger.info("CrossRef [%s]: %d", query, resp.status_code)
+
+            if resp.status_code == 200:
+                for item in resp.json().get("message", {}).get("items", []):
+                    title_list = item.get("title", [])
+                    title = title_list[0] if title_list else "Untitled"
+                    authors = [
+                        f"{a.get('given', '')} {a.get('family', '')}".strip()
+                        for a in (item.get("author") or [])[:5]
+                    ]
+                    date_parts = (
+                        item.get("published-print", {}).get("date-parts", [[]])
+                        or item.get("published-online", {}).get("date-parts", [[]])
+                    )
+                    year = date_parts[0][0] if date_parts and date_parts[0] else None
+                    venue_list = item.get("container-title", [])
+                    venue = venue_list[0] if venue_list else ""
+                    doi = item.get("DOI", "")
+                    url = f"https://doi.org/{doi}" if doi else ""
+
+                    papers.append({
+                        "title": title,
+                        "authors": authors,
+                        "year": year,
+                        "abstract": "",
+                        "url": url,
+                        "venue": venue,
+                        "citationCount": item.get("is-referenced-by-count", 0) or 0,
+                        "downloadUrl": None,
+                    })
+            else:
+                logger.warning("CrossRef %d: %s", resp.status_code, resp.text[:300])
+        except Exception as e:
+            logger.error("CrossRef search failed: %s", e)
+        return papers
+
+    # ── Europe PMC ───────────────────────────────────────────────────
+    def _search_europe_pmc(self, query: str, limit: int = 8) -> List[dict]:
+        """Search Europe PMC for biomedical and life sciences literature."""
+        papers = []
+        try:
+            resp = httpx.get(
+                "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+                params={
+                    "query": query,
+                    "format": "json",
+                    "pageSize": limit,
+                    "resultType": "core",
+                },
+                timeout=15.0,
+            )
+            logger.info("Europe PMC [%s]: %d", query, resp.status_code)
+
+            if resp.status_code == 200:
+                for item in resp.json().get("resultList", {}).get("result", []):
+                    authors_str = item.get("authorString", "")
+                    authors = [a.strip() for a in authors_str.split(",")[:5]] if authors_str else []
+                    year_str = item.get("pubYear")
+                    year = int(year_str) if year_str and str(year_str).isdigit() else None
+                    pmcid = item.get("pmcid", "")
+                    pmid = item.get("pmid", "")
+                    doi = item.get("doi", "")
+                    url = (
+                        f"https://europepmc.org/article/PMC/{pmcid}" if pmcid
+                        else f"https://doi.org/{doi}" if doi
+                        else f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid
+                        else ""
+                    )
+                    dl_url = (
+                        f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmcid}&blobtype=pdf"
+                        if pmcid else None
+                    )
+                    papers.append({
+                        "title": item.get("title", "Untitled") or "Untitled",
+                        "authors": authors,
+                        "year": year,
+                        "abstract": (item.get("abstractText") or "")[:500],
+                        "url": url,
+                        "venue": item.get("journalTitle", "") or "",
+                        "citationCount": item.get("citedByCount", 0) or 0,
+                        "downloadUrl": dl_url,
+                    })
+            else:
+                logger.warning("Europe PMC %d: %s", resp.status_code, resp.text[:300])
+        except Exception as e:
+            logger.error("Europe PMC search failed: %s", e)
+        return papers
+
+    # ── Papers With Code ─────────────────────────────────────────────
+    def _search_papers_with_code(self, query: str, limit: int = 8) -> List[dict]:
+        """Search Papers With Code for ML/AI papers with implementations."""
+        papers = []
+        try:
+            resp = httpx.get(
+                "https://paperswithcode.com/api/v1/search/",
+                params={"q": query, "page": 1, "items_per_page": limit},
+                timeout=15.0,
+            )
+            logger.info("Papers With Code [%s]: %d", query, resp.status_code)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("results", data) if isinstance(data, dict) else data
+                if isinstance(results, list):
+                    for item in results[:limit]:
+                        paper = item.get("paper", item) if isinstance(item, dict) else {}
+                        if not isinstance(paper, dict):
+                            continue
+                        authors_raw = paper.get("authors", [])
+                        if isinstance(authors_raw, list):
+                            authors = [str(a) for a in authors_raw[:5]]
+                        else:
+                            authors = []
+                        url_slug = paper.get("url_abs") or paper.get("url", "")
+                        arxiv_id = paper.get("arxiv_id", "")
+                        dl = f"https://arxiv.org/pdf/{arxiv_id}.pdf" if arxiv_id else None
+                        if not url_slug and arxiv_id:
+                            url_slug = f"https://arxiv.org/abs/{arxiv_id}"
+                        papers.append({
+                            "title": paper.get("title", "Untitled") or "Untitled",
+                            "authors": authors,
+                            "year": None,
+                            "abstract": (paper.get("abstract") or "")[:500],
+                            "url": url_slug,
+                            "venue": "Papers With Code",
+                            "citationCount": 0,
+                            "downloadUrl": dl,
+                        })
+        except Exception as e:
+            logger.error("Papers With Code search failed: %s", e)
+        return papers
+
+    # ── DuckDuckGo (web results as source) ───────────────────────────
+    def _search_duckduckgo(self, query: str, limit: int = 8) -> List[dict]:
+        """Use DuckDuckGo web search and return results as paper-like entries."""
+        papers = []
+        try:
+            raw = self.web_search.invoke(query + " research paper")
+            # DuckDuckGo returns a string of concatenated snippets
+            # Parse what we can
+            if raw:
+                papers.append({
+                    "title": f"Web results: {query}",
+                    "authors": [],
+                    "year": None,
+                    "abstract": raw[:500],
+                    "url": "",
+                    "venue": "DuckDuckGo Web Search",
+                    "citationCount": 0,
+                    "downloadUrl": None,
+                })
+        except Exception as e:
+            logger.error("DuckDuckGo search failed: %s", e)
+        return papers
+
+    # ── Wikipedia ────────────────────────────────────────────────────
+    def _search_wikipedia(self, query: str, limit: int = 5) -> List[dict]:
+        """Search Wikipedia for background/context articles."""
+        papers = []
+        try:
+            resp = httpx.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": limit,
+                    "format": "json",
+                    "utf8": 1,
+                },
+                timeout=10.0,
+            )
+            logger.info("Wikipedia [%s]: %d", query, resp.status_code)
+
+            if resp.status_code == 200:
+                for item in resp.json().get("query", {}).get("search", []):
+                    title = item.get("title", "")
+                    snippet = re.sub(r"<[^>]+>", "", item.get("snippet", ""))
+                    page_id = item.get("pageid", "")
+                    papers.append({
+                        "title": title,
+                        "authors": ["Wikipedia"],
+                        "year": None,
+                        "abstract": snippet[:500],
+                        "url": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
+                        "venue": "Wikipedia",
+                        "citationCount": 0,
+                        "downloadUrl": None,
+                    })
+        except Exception as e:
+            logger.error("Wikipedia search failed: %s", e)
+        return papers
+
+    # ── Source registry (maps source id → search method) ────────────
+    _SOURCE_METHODS: Dict[str, str] = {
+        "semantic_scholar": "_search_semantic_scholar",
+        "arxiv": "_search_arxiv",
+        "openalex": "_search_openalex",
+        "pubmed": "_search_pubmed",
+        "core": "_search_core",
+        "crossref": "_search_crossref",
+        "europe_pmc": "_search_europe_pmc",
+        "papers_with_code": "_search_papers_with_code",
+        "duckduckgo": "_search_duckduckgo",
+        "wikipedia": "_search_wikipedia",
+    }
+
+    _DEFAULT_SOURCES = ["semantic_scholar", "arxiv", "openalex"]
+
     def _search_all_apis(
-        self, queries: List[str], year: Optional[int] = None
+        self, queries: List[str], year: Optional[int] = None,
+        sources: Optional[List[str]] = None,
     ) -> List[dict]:
-        """Fire concurrent searches across Semantic Scholar, arXiv, and OpenAlex."""
+        """Fire concurrent searches across selected APIs."""
+        active = sources if sources else self._DEFAULT_SOURCES
         all_papers: List[dict] = []
         year_range = f"{year - 1}-{year}" if year else None
 
-        with ThreadPoolExecutor(max_workers=9) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             futures = []
             for i, q in enumerate(queries[:3]):
-                # Semantic Scholar — first query with and without year filter
-                if i == 0 and year_range:
-                    futures.append(pool.submit(self._search_semantic_scholar, q, 10, year_range))
-                    futures.append(pool.submit(self._search_semantic_scholar, q, 8, None))
-                else:
-                    futures.append(pool.submit(self._search_semantic_scholar, q, 8, year_range))
+                for src in active:
+                    method_name = self._SOURCE_METHODS.get(src)
+                    if not method_name:
+                        continue
+                    method = getattr(self, method_name, None)
+                    if not method:
+                        continue
 
-                # arXiv
-                futures.append(pool.submit(self._search_arxiv, q, 6))
-
-                # OpenAlex
-                futures.append(pool.submit(self._search_openalex, q, 8, year))
+                    # Source-specific argument handling
+                    if src == "semantic_scholar":
+                        if i == 0 and year_range:
+                            futures.append(pool.submit(method, q, 10, year_range))
+                            futures.append(pool.submit(method, q, 8, None))
+                        else:
+                            futures.append(pool.submit(method, q, 8, year_range))
+                    elif src == "openalex":
+                        futures.append(pool.submit(method, q, 8, year))
+                    else:
+                        futures.append(pool.submit(method, q, 6))
 
             for f in as_completed(futures):
                 try:
@@ -614,7 +953,8 @@ User's Research Question: {question}
         return unique
 
     def execute_research_stream(
-        self, user_id: str, query: str
+        self, user_id: str, query: str,
+        sources: Optional[List[str]] = None,
     ) -> Generator[dict, None, None]:
         """Enhanced research pipeline: multi-API concurrent search → LLM synthesis.
 
@@ -634,16 +974,18 @@ User's Research Question: {question}
         year = params["year"]
         yield {"type": "debug", "standalone_query": " | ".join(queries)}
 
-        # 2. Concurrent search across all APIs
-        yield {"type": "status", "message": "Searching Semantic Scholar, arXiv & OpenAlex..."}
-        all_papers = self._search_all_apis(queries, year)
+        # 2. Concurrent search across selected sources
+        active = sources if sources else self._DEFAULT_SOURCES
+        source_names = [sid.replace("_", " ").title() for sid in active]
+        yield {"type": "status", "message": f"Searching {', '.join(source_names[:4])}{'…' if len(source_names) > 4 else ''}"}
+        all_papers = self._search_all_apis(queries, year, sources=sources)
         all_papers = self._deduplicate_papers(all_papers)
 
         # 3. If too few results, broaden search without year filter
         if len(all_papers) < 3:
             yield {"type": "status", "message": "Broadening search..."}
             broadest = queries[-1] if len(queries) > 1 else queries[0]
-            broader = self._search_all_apis([broadest], year=None)
+            broader = self._search_all_apis([broadest], year=None, sources=sources)
             all_papers = self._deduplicate_papers(all_papers + broader)
 
         # 4. Fallback to web search if still nothing

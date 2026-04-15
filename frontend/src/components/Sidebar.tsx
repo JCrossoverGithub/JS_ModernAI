@@ -35,12 +35,14 @@ import {
   clearBuffer,
 } from "../services/api";
 import type { Conversation, SearchMode } from "../types";
-import { SEARCH_MODES } from "../types";
+import { SEARCH_MODES, RESEARCH_SOURCES } from "../types";
 
 interface SidebarProps {
   conversations: Conversation[];
   activeId: string | null;
   mode: SearchMode;
+  researchSources: string[];
+  onResearchSourcesChange: (sources: string[]) => void;
   onSelectConversation: (id: string) => void;
   onNewConversation: (mode?: string) => void;
   onDeleteConversation: (id: string) => void;
@@ -411,6 +413,8 @@ export default function Sidebar({
   conversations,
   activeId,
   mode,
+  researchSources,
+  onResearchSourcesChange,
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
@@ -424,6 +428,7 @@ export default function Sidebar({
   const [panel, setPanel] = useState<"none" | "facts" | "docs">("none");
   const [menuId, setMenuId] = useState<string | null>(null);
   const [modeOpen, setModeOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
 
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return conversations;
@@ -627,6 +632,83 @@ export default function Sidebar({
             </div>
           )}
         </div>
+
+        {/* Research Sources — visible only in research mode */}
+        {mode === "research" && (
+          <div className="px-3 pb-2">
+            <button
+              onClick={() => setSourcesOpen(!sourcesOpen)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-white/[0.04] transition-colors"
+            >
+              <Settings size={12} className="text-cyan-400" />
+              <span className="text-[11px] text-slate-400 flex-1 text-left">
+                Sources
+              </span>
+              <span className="text-[10px] text-cyan-400/70 font-medium tabular-nums">
+                {researchSources.length}/{RESEARCH_SOURCES.length}
+              </span>
+              <ChevronDown
+                size={11}
+                className={`text-slate-500 transition-transform ${sourcesOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+            {sourcesOpen && (
+              <div className="mt-1.5 bg-white/[0.02] border border-white/[0.06] rounded-xl p-2 space-y-2 animate-fade-in">
+                {(["academic", "discovery"] as const).map((cat) => {
+                  const items = RESEARCH_SOURCES.filter((s) => s.category === cat);
+                  return (
+                    <div key={cat}>
+                      <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-500 px-1 mb-1">
+                        {cat}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {items.map((src) => {
+                          const active = researchSources.includes(src.id);
+                          return (
+                            <button
+                              key={src.id}
+                              onClick={() => {
+                                onResearchSourcesChange(
+                                  active
+                                    ? researchSources.filter((s) => s !== src.id)
+                                    : [...researchSources, src.id]
+                                );
+                              }}
+                              title={src.description}
+                              className={`px-2 py-1 rounded-md text-[10px] font-medium border transition-all ${
+                                active
+                                  ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30 shadow-[0_0_6px_rgba(6,182,212,0.15)]"
+                                  : "bg-white/[0.02] text-slate-500 border-white/[0.06] hover:border-white/[0.12] hover:text-slate-400"
+                              }`}
+                            >
+                              {src.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="flex gap-1 pt-1 border-t border-white/[0.04]">
+                  <button
+                    onClick={() =>
+                      onResearchSourcesChange(RESEARCH_SOURCES.map((s) => s.id))
+                    }
+                    className="flex-1 text-[9px] text-slate-500 hover:text-cyan-400 py-0.5 transition-colors"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    onClick={() => onResearchSourcesChange([])}
+                    className="flex-1 text-[9px] text-slate-500 hover:text-cyan-400 py-0.5 transition-colors"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* User */}
         <div className="flex items-center gap-2 px-4 py-3 border-t border-white/[0.06]">

@@ -41,6 +41,7 @@ function linkifyCitations(content: string, papers: Paper[]): string {
 interface ChatWindowProps {
   conversation: Conversation | null;
   mode: SearchMode;
+  researchSources: string[];
   conversations: Conversation[];
   onAddMessage: (convId: string, msg: Message) => void;
   onUpdateLastMessage: (
@@ -123,6 +124,7 @@ function CopyMessageButton({ text }: { text: string }) {
 export default function ChatWindow({
   conversation,
   mode,
+  researchSources,
   conversations,
   onAddMessage,
   onUpdateLastMessage,
@@ -240,7 +242,11 @@ export default function ChatWindow({
     }
 
     try {
-      await send(userMsg.content, mode);
+      await send(
+        userMsg.content,
+        mode,
+        mode === "research" ? researchSources : undefined
+      );
     } catch (err: any) {
       onAddMessage(conversation.id, {
         id: crypto.randomUUID(),
@@ -250,7 +256,7 @@ export default function ChatWindow({
       });
       setIsStreaming(false);
     }
-  }, [input, conversation, isStreaming, mode, send, onAddMessage]);
+  }, [input, conversation, isStreaming, mode, researchSources, send, onAddMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {

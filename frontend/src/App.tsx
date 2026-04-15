@@ -6,10 +6,12 @@ import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
 import CommandPalette from "./components/CommandPalette";
 import type { SearchMode } from "./types";
+import { DEFAULT_RESEARCH_SOURCES } from "./types";
 
 function AppContent() {
   const { user } = useAuth();
   const [mode, setMode] = useState<SearchMode>("default");
+  const [researchSources, setResearchSources] = useState<string[]>(DEFAULT_RESEARCH_SOURCES);
   const [cmdOpen, setCmdOpen] = useState(false);
 
   const {
@@ -76,6 +78,8 @@ function AppContent() {
         conversations={conversations}
         activeId={activeId}
         mode={mode}
+        researchSources={researchSources}
+        onResearchSourcesChange={setResearchSources}
         onSelectConversation={setActiveId}
         onNewConversation={handleNewResearch}
         onDeleteConversation={remove}
@@ -87,6 +91,7 @@ function AppContent() {
       <ChatWindow
         conversation={active}
         mode={mode}
+        researchSources={researchSources}
         conversations={conversations}
         onAddMessage={addMessage}
         onUpdateLastMessage={updateLastMessage}

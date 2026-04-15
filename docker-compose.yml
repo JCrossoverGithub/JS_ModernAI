@@ -35,7 +35,7 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - CORS_ORIGIN=http://backend:5000
       - UPLOAD_DIR=/data/uploads
-      - EMBED_DEVICE=cuda              # set to 'cpu' if no NVIDIA GPU
+      - EMBED_DEVICE=cpu              # set to 'cpu' if no NVIDIA GPU
       - HF_HOME=/data/hf_cache
     volumes:
       - ai-data:/data

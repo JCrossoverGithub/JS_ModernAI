@@ -71,9 +71,9 @@ export function useSignalR(callbacks: Callbacks) {
   }, []);
 
   const send = useCallback(
-    async (message: string, mode: string) => {
+    async (message: string, mode: string, sources?: string[]) => {
       if (!connection) throw new Error("Not connected");
-      await connection.invoke("SendMessage", message, mode);
+      await connection.invoke("SendMessage", message, mode, sources ?? null);
     },
     [connection]
   );

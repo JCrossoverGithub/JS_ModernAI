@@ -53,9 +53,9 @@ public class PythonAIService
     /// Stream academic research events from the Python AI service as an async enumerable of JSON strings.
     /// Routes to the /research/stream endpoint which searches Semantic Scholar and arXiv.
     /// </summary>
-    public async IAsyncEnumerable<string> StreamResearchAsync(string userId, string query)
+    public async IAsyncEnumerable<string> StreamResearchAsync(string userId, string query, string[]? sources = null)
     {
-        var payload = JsonSerializer.Serialize(new { query, user_id = userId });
+        var payload = JsonSerializer.Serialize(new { query, user_id = userId, sources });
         var request = new HttpRequestMessage(HttpMethod.Post, "/research/stream")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")

@@ -119,19 +119,21 @@ async def chat_stream(req: ChatRequest, ai: LibraryAI = Depends(get_ai)):
 class ResearchRequest(BaseModel):
     query: str
     user_id: str
+    sources: Optional[list[str]] = None
 
 
 @app.post("/research/stream")
 async def research_stream(req: ResearchRequest, ai: LibraryAI = Depends(get_ai)):
     """Stream an academic research response as Server-Sent Events.
 
-    Searches Semantic Scholar and arXiv for papers, synthesizes a summary,
+    Searches selected academic APIs for papers, synthesizes a summary,
     and returns paper metadata with download links.
     """
     def event_generator():
         for event in ai.execute_research_stream(
             user_id=req.user_id,
             query=req.query,
+            sources=req.sources,
         ):
             yield f"data: {json.dumps(event)}\n\n"
 
