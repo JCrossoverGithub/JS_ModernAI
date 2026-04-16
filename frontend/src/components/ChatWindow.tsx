@@ -52,6 +52,7 @@ interface ChatWindowProps {
   onExport: (id: string) => void;
   onNewResearch: (mode?: string) => void;
   onSelectConversation: (id: string) => void;
+  folderContext: string;
 }
 
 const MODE_LABELS: Record<string, string> = {
@@ -132,6 +133,7 @@ export default function ChatWindow({
   onExport,
   onNewResearch,
   onSelectConversation,
+  folderContext,
 }: ChatWindowProps) {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -245,7 +247,8 @@ export default function ChatWindow({
       await send(
         userMsg.content,
         mode,
-        mode === "research" ? researchSources : undefined
+        mode === "research" ? researchSources : undefined,
+        folderContext || undefined
       );
     } catch (err: any) {
       onAddMessage(conversation.id, {
@@ -256,7 +259,7 @@ export default function ChatWindow({
       });
       setIsStreaming(false);
     }
-  }, [input, conversation, isStreaming, mode, researchSources, send, onAddMessage]);
+  }, [input, conversation, isStreaming, mode, researchSources, folderContext, send, onAddMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {

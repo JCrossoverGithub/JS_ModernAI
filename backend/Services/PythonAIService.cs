@@ -24,9 +24,9 @@ public class PythonAIService
     /// Stream chat events from the Python AI service as an async enumerable of JSON strings.
     /// Each yielded string is one SSE "data:" payload (a JSON object with a "type" field).
     /// </summary>
-    public async IAsyncEnumerable<string> StreamChatAsync(string userId, string query, string mode)
+    public async IAsyncEnumerable<string> StreamChatAsync(string userId, string query, string mode, string? folderContext = null)
     {
-        var payload = JsonSerializer.Serialize(new { query, mode, user_id = userId });
+        var payload = JsonSerializer.Serialize(new { query, mode, user_id = userId, folder_context = folderContext ?? "" });
         var request = new HttpRequestMessage(HttpMethod.Post, "/chat/stream")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
@@ -53,9 +53,9 @@ public class PythonAIService
     /// Stream academic research events from the Python AI service as an async enumerable of JSON strings.
     /// Routes to the /research/stream endpoint which searches Semantic Scholar and arXiv.
     /// </summary>
-    public async IAsyncEnumerable<string> StreamResearchAsync(string userId, string query, string[]? sources = null)
+    public async IAsyncEnumerable<string> StreamResearchAsync(string userId, string query, string[]? sources = null, string? folderContext = null)
     {
-        var payload = JsonSerializer.Serialize(new { query, user_id = userId, sources });
+        var payload = JsonSerializer.Serialize(new { query, user_id = userId, sources, folder_context = folderContext ?? "" });
         var request = new HttpRequestMessage(HttpMethod.Post, "/research/stream")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")

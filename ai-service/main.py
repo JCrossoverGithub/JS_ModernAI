@@ -69,6 +69,7 @@ class ChatRequest(BaseModel):
     query: str
     mode: str = "default"  # default | strict | chat | web
     user_id: str
+    folder_context: str = ""
 
 
 class FactRequest(BaseModel):
@@ -109,6 +110,7 @@ async def chat_stream(req: ChatRequest, ai: LibraryAI = Depends(get_ai)):
             use_library=use_library,
             use_memory=use_memory,
             force_web=force_web,
+            folder_context=req.folder_context,
         ):
             yield f"data: {json.dumps(event)}\n\n"
 
@@ -120,6 +122,7 @@ class ResearchRequest(BaseModel):
     query: str
     user_id: str
     sources: Optional[list[str]] = None
+    folder_context: str = ""
 
 
 @app.post("/research/stream")
@@ -134,6 +137,7 @@ async def research_stream(req: ResearchRequest, ai: LibraryAI = Depends(get_ai))
             user_id=req.user_id,
             query=req.query,
             sources=req.sources,
+            folder_context=req.folder_context,
         ):
             yield f"data: {json.dumps(event)}\n\n"
 

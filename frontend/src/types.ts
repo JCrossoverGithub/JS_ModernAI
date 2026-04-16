@@ -43,6 +43,15 @@ export interface Conversation {
   createdAt: number;
   updatedAt: number;
   pinned?: boolean;
+  folderId?: string;
+  sortOrder: number;
+}
+
+export interface Folder {
+  id: string;
+  name: string;
+  expanded: boolean;
+  sortOrder: number;
 }
 
 export type SearchMode = "default" | "strict" | "chat" | "web" | "research";

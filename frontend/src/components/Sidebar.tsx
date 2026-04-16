@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Plus,
   Search,
@@ -22,6 +22,9 @@ import {
   Command,
   X,
   GraduationCap,
+  FolderOpen,
+  FolderClosed,
+  GripVertical,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -34,22 +37,30 @@ import {
   wipeMemory,
   clearBuffer,
 } from "../services/api";
-import type { Conversation, SearchMode } from "../types";
+import type { Conversation, Folder, SearchMode } from "../types";
 import { SEARCH_MODES, RESEARCH_SOURCES } from "../types";
 
 interface SidebarProps {
   conversations: Conversation[];
+  folders: Folder[];
   activeId: string | null;
   mode: SearchMode;
   researchSources: string[];
   onResearchSourcesChange: (sources: string[]) => void;
   onSelectConversation: (id: string) => void;
-  onNewConversation: (mode?: string) => void;
+  onNewConversation: (mode?: string, folderId?: string) => void;
   onDeleteConversation: (id: string) => void;
   onTogglePin: (id: string) => void;
   onExport: (id: string) => void;
   onModeChange: (mode: SearchMode) => void;
   onOpenCommandPalette: () => void;
+  onCreateFolder: (name: string, convIdA: string, convIdB: string) => string;
+  onRenameFolder: (folderId: string, name: string) => void;
+  onToggleFolderExpanded: (folderId: string) => void;
+  onMoveToFolder: (convId: string, folderId: string) => void;
+  onRemoveFromFolder: (convId: string) => void;
+  onDeleteFolder: (folderId: string) => void;
+  onReorder: (convId: string, newSortOrder: number) => void;
 }
 
 const MODE_ICONS: Record<string, typeof Zap> = {
@@ -411,6 +422,7 @@ function ConversationMenu({
 
 export default function Sidebar({
   conversations,
+  folders,
   activeId,
   mode,
   researchSources,
@@ -422,6 +434,13 @@ export default function Sidebar({
   onExport,
   onModeChange,
   onOpenCommandPalette,
+  onCreateFolder,
+  onRenameFolder,
+  onToggleFolderExpanded,
+  onMoveToFolder,
+  onRemoveFromFolder,
+  onDeleteFolder,
+  onReorder,
 }: SidebarProps) {
   const { user, logout } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
@@ -429,6 +448,19 @@ export default function Sidebar({
   const [menuId, setMenuId] = useState<string | null>(null);
   const [modeOpen, setModeOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+
+  // ── Drag state ──
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; type: "conv" | "folder" | "root" } | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const folderNameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingFolderId && folderNameRef.current) {
+      folderNameRef.current.focus();
+      folderNameRef.current.select();
+    }
+  }, [editingFolderId]);
 
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return conversations;
@@ -440,12 +472,182 @@ export default function Sidebar({
     );
   }, [conversations, searchQuery]);
 
-  const groups = useMemo(() => groupConversations(filtered), [filtered]);
+  // Build an ordered list: loose conversations sorted by updatedAt,
+  // with folder groups placed at the position of their most recently updated child.
+  const listItems = useMemo(() => {
+    const loose = filtered.filter((c) => !c.folderId).sort((a, b) => b.updatedAt - a.updatedAt);
+    const folderConvs = new Map<string, Conversation[]>();
+    for (const c of filtered.filter((c) => c.folderId)) {
+      const list = folderConvs.get(c.folderId!) || [];
+      list.push(c);
+      folderConvs.set(c.folderId!, list);
+    }
+    // Sort within each folder
+    for (const [, list] of folderConvs) {
+      list.sort((a, b) => b.updatedAt - a.updatedAt);
+    }
+
+    type Item = { type: "conv"; conv: Conversation } | { type: "folder"; folder: Folder; convs: Conversation[] };
+    const items: Item[] = [];
+
+    // Merge loose convos and folders by most recent activity
+    const folderEntries: { folder: Folder; convs: Conversation[]; latest: number }[] = [];
+    for (const f of folders) {
+      const convs = folderConvs.get(f.id) || [];
+      if (convs.length === 0) continue;
+      const latest = Math.max(...convs.map((c) => c.updatedAt));
+      folderEntries.push({ folder: f, convs, latest });
+    }
+    folderEntries.sort((a, b) => b.latest - a.latest);
+
+    let li = 0;
+    let fi = 0;
+    while (li < loose.length || fi < folderEntries.length) {
+      const looseTs = li < loose.length ? loose[li].updatedAt : -1;
+      const folderTs = fi < folderEntries.length ? folderEntries[fi].latest : -1;
+      if (looseTs >= folderTs && li < loose.length) {
+        items.push({ type: "conv", conv: loose[li] });
+        li++;
+      } else if (fi < folderEntries.length) {
+        items.push({ type: "folder", folder: folderEntries[fi].folder, convs: folderEntries[fi].convs });
+        fi++;
+      }
+    }
+    return items;
+  }, [filtered, folders]);
+
+  // ── Drag handlers ──
+  const handleDragStart = (convId: string) => (e: React.DragEvent) => {
+    setDragId(convId);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", convId);
+  };
+
+  const handleDragOver = (id: string, type: "conv" | "folder" | "root") => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (id !== dragId) setDropTarget({ id, type });
+  };
+
+  const handleDragLeave = () => setDropTarget(null);
+
+  const handleDrop = (targetId: string, targetType: "conv" | "folder" | "root") => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const srcId = e.dataTransfer.getData("text/plain") || dragId;
+    setDragId(null);
+    setDropTarget(null);
+    if (!srcId || srcId === targetId) return;
+
+    if (targetType === "folder") {
+      // Drop onto a folder → move into it
+      onMoveToFolder(srcId, targetId);
+    } else if (targetType === "conv") {
+      // Drop a conversation onto another conversation → create a new folder
+      const src = conversations.find((c) => c.id === srcId);
+      const tgt = conversations.find((c) => c.id === targetId);
+      if (!src || !tgt) return;
+
+      if (tgt.folderId) {
+        // Target is already in a folder → just move src into that folder
+        onMoveToFolder(srcId, tgt.folderId);
+      } else {
+        // Both are loose → create a new folder
+        const folderName = `${tgt.title.slice(0, 20)}…`;
+        onCreateFolder(folderName, srcId, targetId);
+      }
+    } else if (targetType === "root") {
+      // Drop to root area → remove from folder
+      onRemoveFromFolder(srcId);
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDragId(null);
+    setDropTarget(null);
+  };
 
   if (panel === "facts") return <FactsPanel onClose={() => setPanel("none")} />;
   if (panel === "docs") return <DocsPanel onClose={() => setPanel("none")} />;
 
   const ModeIcon = MODE_ICONS[mode] || Zap;
+
+  // ── Render a single conversation row ──
+  const renderConvRow = (c: Conversation, indent = false) => {
+    const isActive = c.id === activeId;
+    const isDragging = dragId === c.id;
+    const isDropTarget = dropTarget?.id === c.id && dropTarget.type === "conv";
+    const CIcon = MODE_ICONS[c.mode] || Zap;
+
+    return (
+      <div
+        key={c.id}
+        className="relative"
+        draggable
+        onDragStart={handleDragStart(c.id)}
+        onDragOver={handleDragOver(c.id, "conv")}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop(c.id, "conv")}
+        onDragEnd={handleDragEnd}
+      >
+        <button
+          onClick={() => onSelectConversation(c.id)}
+          className={`w-full flex items-center gap-2 py-2 rounded-lg text-left transition-all group ${
+            indent ? "pl-8 pr-3" : "px-3"
+          } ${
+            isDropTarget
+              ? "bg-indigo-500/20 border border-indigo-500/40 border-dashed"
+              : isDragging
+              ? "opacity-40"
+              : isActive
+              ? "bg-white/[0.07] text-white"
+              : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200"
+          }`}
+        >
+          <GripVertical size={11} className="text-slate-600 shrink-0 opacity-0 group-hover:opacity-60 cursor-grab" />
+          <CIcon
+            size={13}
+            className={`shrink-0 ${
+              isActive ? MODE_COLORS[c.mode] || "text-slate-400" : "text-slate-600"
+            }`}
+          />
+          <span className="flex-1 text-sm truncate">{c.title}</span>
+          {c.folderId && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemoveFromFolder(c.id);
+              }}
+              className="p-0.5 rounded text-slate-600 hover:text-slate-300 opacity-0 group-hover:opacity-70 shrink-0"
+              title="Remove from folder"
+            >
+              <X size={10} />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuId(menuId === c.id ? null : c.id);
+            }}
+            className={`p-0.5 rounded text-slate-600 hover:text-slate-300 transition-opacity shrink-0 ${
+              menuId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+            }`}
+          >
+            <MoreHorizontal size={13} />
+          </button>
+        </button>
+        {menuId === c.id && (
+          <ConversationMenu
+            conversation={c}
+            onPin={() => onTogglePin(c.id)}
+            onExport={() => onExport(c.id)}
+            onDelete={() => onDeleteConversation(c.id)}
+            onClose={() => setMenuId(null)}
+          />
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="w-72 bg-[#0f1019] border-r border-white/[0.06] flex flex-col h-full">
@@ -481,8 +683,12 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* Conversations */}
-      <div className="flex-1 overflow-y-auto px-2">
+      {/* Conversations with drag-and-drop */}
+      <div
+        className="flex-1 overflow-y-auto px-2"
+        onDragOver={handleDragOver("root", "root")}
+        onDrop={handleDrop("root", "root")}
+      >
         {filtered.length === 0 ? (
           <div className="px-3 py-6 text-center">
             <p className="text-xs text-slate-500">
@@ -490,66 +696,89 @@ export default function Sidebar({
             </p>
           </div>
         ) : (
-          Array.from(groups.entries()).map(([label, convos]) => (
-            <div key={label} className="mb-3">
-              <div className="flex items-center gap-2 px-3 py-1.5">
-                {label === "Pinned" && (
-                  <Pin size={10} className="text-indigo-400" />
-                )}
-                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                  {label}
-                </span>
-              </div>
-              {convos.map((c) => {
-                const isActive = c.id === activeId;
-                const CIcon = MODE_ICONS[c.mode] || Zap;
-                return (
-                  <div key={c.id} className="relative">
-                    <button
-                      onClick={() => onSelectConversation(c.id)}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all group ${
-                        isActive
-                          ? "bg-white/[0.07] text-white"
-                          : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200"
-                      }`}
+          listItems.map((item) => {
+            if (item.type === "conv") {
+              return renderConvRow(item.conv);
+            }
+            // Folder
+            const f = item.folder;
+            const convs = item.convs;
+            const isFolderDrop = dropTarget?.id === f.id && dropTarget.type === "folder";
+            return (
+              <div
+                key={f.id}
+                className={`mb-1 rounded-lg transition-all ${
+                  isFolderDrop ? "bg-indigo-500/10 ring-1 ring-indigo-500/30" : ""
+                }`}
+                onDragOver={handleDragOver(f.id, "folder")}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop(f.id, "folder")}
+              >
+                {/* Folder header */}
+                <div className="flex items-center gap-1.5 px-2 py-1.5 group">
+                  <button
+                    onClick={() => onToggleFolderExpanded(f.id)}
+                    className="p-0.5 rounded text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    {f.expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </button>
+                  {f.expanded ? (
+                    <FolderOpen size={13} className="text-amber-500/70 shrink-0" />
+                  ) : (
+                    <FolderClosed size={13} className="text-amber-500/70 shrink-0" />
+                  )}
+                  {editingFolderId === f.id ? (
+                    <input
+                      ref={folderNameRef}
+                      defaultValue={f.name}
+                      onBlur={(e) => {
+                        const val = e.target.value.trim();
+                        if (val) onRenameFolder(f.id, val);
+                        setEditingFolderId(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        if (e.key === "Escape") setEditingFolderId(null);
+                      }}
+                      className="flex-1 text-xs text-white bg-white/[0.06] border border-white/[0.1] rounded px-1.5 py-0.5 outline-none focus:border-indigo-500/50"
+                    />
+                  ) : (
+                    <span
+                      className="flex-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider truncate cursor-pointer"
+                      onDoubleClick={() => setEditingFolderId(f.id)}
+                      title="Double-click to rename"
                     >
-                      <CIcon
-                        size={13}
-                        className={`shrink-0 ${
-                          isActive
-                            ? MODE_COLORS[c.mode] || "text-slate-400"
-                            : "text-slate-600"
-                        }`}
-                      />
-                      <span className="flex-1 text-sm truncate">{c.title}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setMenuId(menuId === c.id ? null : c.id);
-                        }}
-                        className={`p-0.5 rounded text-slate-600 hover:text-slate-300 transition-opacity shrink-0 ${
-                          menuId === c.id
-                            ? "opacity-100"
-                            : "opacity-0 group-hover:opacity-100"
-                        }`}
-                      >
-                        <MoreHorizontal size={13} />
-                      </button>
-                    </button>
-                    {menuId === c.id && (
-                      <ConversationMenu
-                        conversation={c}
-                        onPin={() => onTogglePin(c.id)}
-                        onExport={() => onExport(c.id)}
-                        onDelete={() => onDeleteConversation(c.id)}
-                        onClose={() => setMenuId(null)}
-                      />
-                    )}
+                      {f.name}
+                    </span>
+                  )}
+                  <span className="text-[9px] text-slate-600 tabular-nums">{convs.length}</span>
+                  <button
+                    onClick={() => onNewConversation(mode, f.id)}
+                    className="p-0.5 rounded text-slate-600 hover:text-slate-300 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                    title="New chat in folder"
+                  >
+                    <Plus size={10} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete folder "${f.name}"? Chats will be moved to top level.`))
+                        onDeleteFolder(f.id);
+                    }}
+                    className="p-0.5 rounded text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                    title="Delete folder"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+                {/* Folder children */}
+                {f.expanded && (
+                  <div className="ml-1 border-l border-white/[0.04] mb-1">
+                    {convs.map((c) => renderConvRow(c, true))}
                   </div>
-                );
-              })}
-            </div>
-          ))
+                )}
+              </div>
+            );
+          })
         )}
       </div>
 

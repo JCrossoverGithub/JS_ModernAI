@@ -16,6 +16,7 @@ function AppContent() {
 
   const {
     conversations,
+    folders,
     active,
     activeId,
     setActiveId,
@@ -26,6 +27,14 @@ function AppContent() {
     togglePin,
     toggleBookmark,
     setMode: setConvMode,
+    createFolder,
+    renameFolder,
+    toggleFolderExpanded,
+    moveToFolder,
+    removeFromFolder,
+    deleteFolder,
+    reorder,
+    getFolderContext,
     exportAsMarkdown,
     search,
   } = useConversations();
@@ -46,10 +55,10 @@ function AppContent() {
   }, [cmdOpen]);
 
   const handleNewResearch = useCallback(
-    (m?: string) => {
+    (m?: string, folderId?: string) => {
       const newMode = (m as SearchMode) || mode;
       setMode(newMode);
-      create(newMode);
+      create(newMode, folderId);
     },
     [mode, create]
   );
@@ -76,6 +85,7 @@ function AppContent() {
     <div className="flex h-screen bg-[#0a0b12] text-slate-100">
       <Sidebar
         conversations={conversations}
+        folders={folders}
         activeId={activeId}
         mode={mode}
         researchSources={researchSources}
@@ -87,12 +97,20 @@ function AppContent() {
         onExport={exportAsMarkdown}
         onModeChange={handleModeChange}
         onOpenCommandPalette={() => setCmdOpen(true)}
+        onCreateFolder={createFolder}
+        onRenameFolder={renameFolder}
+        onToggleFolderExpanded={toggleFolderExpanded}
+        onMoveToFolder={moveToFolder}
+        onRemoveFromFolder={removeFromFolder}
+        onDeleteFolder={deleteFolder}
+        onReorder={reorder}
       />
       <ChatWindow
         conversation={active}
         mode={mode}
         researchSources={researchSources}
         conversations={conversations}
+        folderContext={active ? getFolderContext(active.id) : ""}
         onAddMessage={addMessage}
         onUpdateLastMessage={updateLastMessage}
         onToggleBookmark={toggleBookmark}

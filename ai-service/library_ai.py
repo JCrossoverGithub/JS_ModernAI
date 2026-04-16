@@ -54,7 +54,7 @@ class LibraryAI:
             embedding_function=self.embedding_model,
         )
 
-        self.llm = OllamaLLM(model="llama3:8b", base_url=ollama_base_url)
+        self.llm = OllamaLLM(model="mannix/llama3.1-8b-abliterated", base_url=ollama_base_url)
         self.web_search = DuckDuckGoSearchRun()
 
         self.recent_chat_buffers: Dict[str, List[str]] = {}
@@ -69,7 +69,7 @@ class LibraryAI:
         - qa_chain: Generates an answer given context (documents or web results)
           and past conversation history.
         """
-        rephrase_template = """Given the following conversation and a follow-up question, rephrase the follow-up question to be a highly specific standalone search query.
+        rephrase_template = """Rewrite into a clear standalone query that preserves the user’s intent and adds missing references, without adding unsupported details.
 
         CRITICAL INSTRUCTIONS:
         - If the user uses pronouns like "I", "me", or "my", rewrite them as "the user" or "the user's".
@@ -108,11 +108,9 @@ class LibraryAI:
 
 RULES:
 - Strip meta-instructions like "find papers about", "get me sources on", "I need research on"
-- Extract the CORE scientific/technical topic
-- Generate variations: one specific, one moderately broad, one broad
-- Keep each query between 2 and 8 words
 - Do NOT number them, do NOT add bullets or explanation
 - Output ONLY the queries, one per line
+- Preserve important named entities, locations, and technical terms.
 
 Recent context: {recent_history}
 User request: {question}
@@ -121,7 +119,7 @@ Search queries:"""
         self.research_query_chain = PromptTemplate.from_template(research_query_template) | self.llm
 
         # --- Research: synthesis from papers ---
-        research_template = """You are an expert academic research analyst synthesizing findings from scientific papers.
+        research_template = """You are an expert academic research analyst synthesizing findings from scientific papers to learn and further your research.
 
 RECENT CONVERSATION:
 {recent_history}
@@ -132,14 +130,15 @@ PAPERS FOUND:
 INSTRUCTIONS:
 - Write a comprehensive, well-structured research overview that answers the user's question.
 - Use markdown formatting with clear section headers (##).
-- Organize into sections like: ## Overview, ## Key Findings, ## Technical Approaches, ## Challenges & Open Problems, ## Future Directions
-- Reference specific papers using their number in square brackets, e.g. [1], [2], [3]. These numbers correspond to the paper numbers listed above.
-- Include specific numbers, metrics, benchmarks, and technical details from paper abstracts.
+- Organize into sections if appropriate.
+- If used, reference specific papers using their number in square brackets, e.g. [1], [2], [3]. These numbers correspond to the paper numbers listed above.
+- Include specific numbers, metrics, benchmarks, and technical details from paper abstracts as fit.
 - Compare and contrast different approaches across papers.
 - If papers only partially cover the topic, clearly note what gaps remain.
 - Use the recent conversation to understand context, follow-up references, and pronouns.
 - Be thorough but concise.
 - Do NOT invent facts not present in the papers.
+- You can use information from ANY of the papers, even if not the top result, to construct your answer.
 
 User's Research Question: {question}
 
@@ -955,6 +954,7 @@ User's Research Question: {question}
     def execute_research_stream(
         self, user_id: str, query: str,
         sources: Optional[List[str]] = None,
+        folder_context: str = "",
     ) -> Generator[dict, None, None]:
         """Enhanced research pipeline: multi-API concurrent search → LLM synthesis.
 
@@ -966,6 +966,8 @@ User's Research Question: {question}
         """
         buffer = self._get_buffer(user_id)
         recent_history_str = "\n".join(buffer) if buffer else "No recent conversation."
+        if folder_context:
+            recent_history_str = f"[Shared folder context]\n{folder_context}\n\n{recent_history_str}"
 
         # 1. Extract clean search queries + year filter
         yield {"type": "status", "message": "Analyzing research request..."}
@@ -1082,7 +1084,8 @@ User's Research Question: {question}
         return modes.get(mode, modes["default"])
 
     def execute_query_stream(
-        self, user_id: str, query: str, use_library: bool, use_memory: bool, force_web: bool
+        self, user_id: str, query: str, use_library: bool, use_memory: bool, force_web: bool,
+        folder_context: str = "",
     ) -> Generator[dict, None, None]:
         """
         Streaming RAG pipeline. Yields dicts:
@@ -1094,6 +1097,8 @@ User's Research Question: {question}
         """
         buffer = self._get_buffer(user_id)
         recent_history_str = "\n".join(buffer) if buffer else "No recent conversation."
+        if folder_context:
+            recent_history_str = f"[Shared folder context]\n{folder_context}\n\n{recent_history_str}"
 
         # 1. Rephrase
         standalone_query = self.rephrase_chain.invoke(
@@ -1107,6 +1112,10 @@ User's Research Question: {question}
             memory_docs = self.memory_db.similarity_search(standalone_query, k=2)
             if memory_docs:
                 chat_history_str = "\n\n".join([d.page_content for d in memory_docs])
+
+        # Inject folder context so the QA chain can reference sibling chats
+        if folder_context:
+            chat_history_str = f"[Shared context from related chats in the same folder]\n{folder_context}\n\n{chat_history_str}"
 
         # 3. Retrieve library / web
         context_str = "Library search disabled."

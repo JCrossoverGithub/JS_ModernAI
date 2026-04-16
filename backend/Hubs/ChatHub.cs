@@ -29,13 +29,13 @@ public class ChatHub : Hub
     /// <param name="query">The user's question.</param>
     /// <param name="mode">Search mode: default, strict, chat, web, or research.</param>
     /// <param name="sources">Optional list of research source IDs to search.</param>
-    public async Task SendMessage(string query, string mode, string[]? sources = null)
+    public async Task SendMessage(string query, string mode, string[]? sources = null, string? folderContext = null)
     {
         var userId = Context.UserIdentifier ?? Context.ConnectionId;
 
         var eventStream = mode == "research"
-            ? _ai.StreamResearchAsync(userId, query, sources)
-            : _ai.StreamChatAsync(userId, query, mode);
+            ? _ai.StreamResearchAsync(userId, query, sources, folderContext)
+            : _ai.StreamChatAsync(userId, query, mode, folderContext);
 
         await foreach (var jsonEvent in eventStream)
         {
