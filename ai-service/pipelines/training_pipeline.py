@@ -8,9 +8,11 @@ Implements Chapters 5-6 of the LLM Engineer's Handbook:
 Run:
     # ZenML-tracked run:
     python -m pipelines.training_pipeline --finetuning-type sft
+    python -m pipelines.training_pipeline --finetuning-type dpo --model-id ./models/sft/final_adapter
 
     # Lightweight local run (no ZenML tracking, useful for quick tests):
     python -m pipelines.training_pipeline --finetuning-type sft --no-zenml
+    python -m pipelines.training_pipeline --finetuning-type dpo --model-id ./models/sft/final_adapter --no-zenml
 """
 
 from zenml import pipeline
@@ -51,6 +53,16 @@ def _run_sft_local(model_id: str, dataset_size: int) -> None:
     _push.entrypoint(adapter_path=adapter_path)
 
 
+def _run_dpo_local(model_id: str, dataset_size: int) -> None:
+    """Run the DPO pipeline directly without ZenML tracking."""
+    from steps.training.dpo import build_preference_dataset as _build, run_dpo as _dpo
+    from steps.training.hub import push_to_huggingface as _push
+
+    dataset = _build.entrypoint(model_id=model_id, max_samples=dataset_size)
+    adapter_path = _dpo.entrypoint(base_model_id=model_id, dataset=dataset)
+    _push.entrypoint(adapter_path=adapter_path)
+
+
 if __name__ == "__main__":
     import argparse
     from config import get_settings
@@ -81,7 +93,7 @@ if __name__ == "__main__":
         if args.finetuning_type == "sft":
             _run_sft_local(args.model_id, args.dataset_size)
         else:
-            raise NotImplementedError("--no-zenml for DPO implemented in Phase 5")
+            _run_dpo_local(args.model_id, args.dataset_size)
     elif args.finetuning_type == "sft":
         sft_pipeline(model_id=args.model_id, dataset_size=args.dataset_size)
     else:

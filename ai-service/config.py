@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     sft_output_dir: str = "./models/sft"
     sft_max_samples: int = 1000
 
+    # --- DPO training hyperparams (Phase 5) ---
+    dpo_beta: float = 0.1          # KL divergence penalty (lower = more deviation from SFT)
+    dpo_epochs: int = 1            # DPO typically converges in 1 epoch
+    dpo_max_samples: int = 500
+    dpo_output_dir: str = "./models/dpo"
+
     # --- Inference mode ---
     # "ollama"       → current local Ollama server (Phase 1)
     # "huggingface"  → HF pipeline with local / fine-tuned weights (Phase 7)
