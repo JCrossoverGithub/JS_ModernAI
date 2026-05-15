@@ -16,13 +16,11 @@ This server is intended to be called by the .NET backend, not directly
 by the frontend. CORS is configured to allow only the backend origin.
 """
 
-import asyncio
 import logging
 import os
 import json
 import shutil
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Form, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -54,10 +52,10 @@ _ai: Optional[LibraryAI] = None
 
 @app.on_event("startup")
 def _init_ai():
-    """Pre-load the AI engine (embedding model + ChromaDB) at server start."""
+    """Pre-load the AI engine (embedding model + Qdrant) at server start."""
     global _ai
     settings = get_settings()
-    _ai = LibraryAI(chroma_dir=os.getenv("CHROMA_DIR", "./chroma_db"), ollama_base_url=settings.ollama_base_url)
+    _ai = LibraryAI(ollama_base_url=settings.ollama_base_url)
     # Ensure MongoDB indexes (non-fatal if MongoDB is down)
     try:
         ensure_indexes()
@@ -74,38 +72,6 @@ def get_ai() -> LibraryAI:
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# Thread pool for background feature pipeline runs (one at a time avoids GPU contention)
-_pipeline_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="feature-pipeline")
-
-
-def _run_feature_pipeline(author_id: str) -> None:
-    """Execute the full feature pipeline synchronously in a background thread.
-
-    Reads all raw documents for *author_id* from MongoDB, cleans, chunks,
-    embeds (GPU), and upserts into Qdrant. Safe to re-run — chunk IDs are
-    deterministic so Qdrant upsert is idempotent.
-    """
-    # Lazy imports keep startup fast; these are only needed when a doc is uploaded
-    from steps.data_collection import load_raw_documents
-    from steps.feature_engineering import (
-        clean_documents, chunk_documents, embed_chunks, load_to_qdrant
-    )
-    try:
-        raw = load_raw_documents(author_id=author_id)
-        if not raw:
-            logger.info("Feature pipeline: no documents found for user '%s'.", author_id)
-            return
-        cleaned = clean_documents(documents=raw)
-        chunks = chunk_documents(documents=cleaned)
-        embedded = embed_chunks(chunks=chunks)
-        load_to_qdrant(chunks=embedded)
-        logger.info(
-            "Feature pipeline complete for user '%s': %d chunks in Qdrant.",
-            author_id, len(embedded),
-        )
-    except Exception as exc:
-        logger.error("Feature pipeline failed for user '%s': %s", author_id, exc)
 
 
 # --- Request models ---
@@ -240,7 +206,7 @@ async def upload_document(
     with open(save_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # --- Save raw document to MongoDB (data warehouse) ---
+    # --- Save raw document to MongoDB (data warehouse for training pipeline) ---
     mongo_ok = mongo_ping()
     if mongo_ok:
         try:
@@ -251,18 +217,12 @@ async def upload_document(
                 upsert=True,
             )
         except Exception as exc:
-            logger.warning("MongoDB write failed (continuing with ChromaDB ingest): %s", exc)
-            mongo_ok = False
+            logger.warning("MongoDB write failed (non-fatal): %s", exc)
 
-    # --- Kick off Qdrant feature pipeline in background (non-blocking) ---
-    loop = asyncio.get_running_loop()
-    if mongo_ok:
-        loop.run_in_executor(_pipeline_executor, _run_feature_pipeline, user_id)
-
-    # --- Stream ChromaDB ingest progress to caller (existing behaviour) ---
+    # --- Stream Qdrant ingest progress to caller ---
     def event_generator():
         try:
-            for event in ai.ingest_document_stream(save_path, file.filename):
+            for event in ai.ingest_document_stream(save_path, file.filename, user_id):
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
             try:

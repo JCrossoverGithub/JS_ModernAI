@@ -52,8 +52,6 @@ services:
     ports:
       - "8100:8100"
     environment:
-      # Legacy (Phase 1 — removed in Phase 3)
-      - CHROMA_DIR=/data/chroma_db
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       # Serving
       - CORS_ORIGIN=http://backend:5000

@@ -1,58 +1,62 @@
 """
 library_ai.py — Core AI engine for LibraryAI.
 
-Refactored from the original js_ai.py CLI tool. This module provides the
-LibraryAI class which implements:
-  - Retrieval-Augmented Generation (RAG) over ChromaDB document store
-  - Per-user chat memory with vector similarity search
-  - Multi-format document ingestion (PDF, TXT, DOCX)
-  - Live web search fallback via DuckDuckGo
-  - Streaming token generation via LangChain + Ollama
+Phase 3 refactor: ChromaDB replaced with Qdrant.
+  - Document store:  Qdrant collection 'library_ai'  (per-user filter by user_id)
+  - Memory store:    Qdrant collection 'chat_memory' (per-user filter by user_id)
+  - Ingest:          inline pipeline steps (clean → chunk → embed → upsert)
+  - Retrieval:       QdrantClient.search() with user_id filter
 
 This module is consumed by main.py (FastAPI) and should not be run directly.
 """
 
+import hashlib
 import os
 import re
+import uuid
 import logging
 from typing import Tuple, List, Dict, Generator, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
-from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import PromptTemplate
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.tools import DuckDuckGoSearchRun
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    FieldCondition, Filter, FilterSelector,
+    MatchValue, PointIdsList, PointStruct,
+)
+
+from config import get_settings
+from steps.feature_engineering.cleaning import clean_text
+from steps.feature_engineering.qdrant_loader import _ensure_collection, VECTOR_DIM, UPSERT_BATCH_SIZE
 
 logger = logging.getLogger(__name__)
 
 
 class LibraryAI:
-    def __init__(self, chroma_dir: str, ollama_base_url: str = "http://localhost:11434"):
-        """Initialize the AI engine with connections to ChromaDB, Ollama, and HuggingFace.
+    def __init__(self, ollama_base_url: str = "http://localhost:11434"):
+        """Initialize the AI engine with connections to Qdrant, Ollama, and HuggingFace.
 
         Args:
-            chroma_dir: Filesystem path for ChromaDB persistence. Two collections
-                        are created: the default collection for documents and
-                        'chat_memory' for user conversation history.
             ollama_base_url: Base URL of the Ollama server (e.g. http://localhost:11434).
         """
-        embed_device = os.getenv("EMBED_DEVICE", "cuda")
+        settings = get_settings()
         self.embedding_model = HuggingFaceEmbeddings(
             model_name="BAAI/bge-large-en-v1.5",
-            model_kwargs={"device": embed_device},
+            model_kwargs={"device": settings.embed_device},
         )
 
-        self.vector_db = Chroma(
-            persist_directory=chroma_dir, embedding_function=self.embedding_model
-        )
-        self.memory_db = Chroma(
-            collection_name="chat_memory",
-            persist_directory=chroma_dir,
-            embedding_function=self.embedding_model,
-        )
+        self.qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+        self.doc_collection = settings.qdrant_collection_name
+        self.mem_collection = settings.qdrant_memory_collection
+
+        # Ensure both collections exist on startup (idempotent)
+        _ensure_collection(self.qdrant, self.doc_collection)
+        _ensure_collection(self.qdrant, self.mem_collection)
 
         self.llm = OllamaLLM(model="mannix/llama3.1-8b-abliterated", base_url=ollama_base_url)
         self.web_search = DuckDuckGoSearchRun()
@@ -167,51 +171,70 @@ User's Research Question: {question}
     # ==========================================
 
     def save_fact(self, user_id: str, fact: str) -> str:
-        """Store an explicit user fact in the vector memory database.
-
-        Args:
-            user_id: Unique identifier for the user (from JWT).
-            fact: The fact text to save (e.g. "My favorite color is blue").
-
-        Returns:
-            Confirmation message string.
-        """
-        self.memory_db.add_texts(
-            texts=[f"User provided an explicit fact to remember: {fact}"],
-            metadatas=[{"role": "user", "type": "explicit_fact", "user_id": user_id}],
+        """Store an explicit user fact in the Qdrant memory collection."""
+        text = f"User provided an explicit fact to remember: {fact}"
+        vector = self.embedding_model.embed_query(text)
+        self.qdrant.upsert(
+            collection_name=self.mem_collection,
+            points=[PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vector,
+                payload={"content": text, "user_id": user_id, "type": "explicit_fact"},
+            )],
         )
         self._update_buffer(user_id, f"User explicitly stated a fact: {fact}")
         return f"I will remember that: '{fact}'"
 
     def list_facts(self, user_id: str) -> List[str]:
-        """Retrieve all explicit facts saved by this user."""
-        all_facts = self.memory_db.get(
-            where={"$and": [{"type": "explicit_fact"}, {"user_id": user_id}]}
+        """Retrieve all explicit facts saved by this user from Qdrant."""
+        records, _ = self.qdrant.scroll(
+            collection_name=self.mem_collection,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                FieldCondition(key="type", match=MatchValue(value="explicit_fact")),
+            ]),
+            with_payload=True,
+            limit=200,
         )
+        prefix = "User provided an explicit fact to remember: "
         return [
-            doc.replace("User provided an explicit fact to remember: ", "")
-            for doc in all_facts["documents"]
+            r.payload["content"].replace(prefix, "", 1)
+            for r in records
+            if r.payload and "content" in r.payload
         ]
 
     def delete_fact(self, user_id: str, keyword: str) -> int:
         """Delete all facts containing the keyword (case-insensitive). Returns count deleted."""
-        all_facts = self.memory_db.get(
-            where={"$and": [{"type": "explicit_fact"}, {"user_id": user_id}]}
+        records, _ = self.qdrant.scroll(
+            collection_name=self.mem_collection,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                FieldCondition(key="type", match=MatchValue(value="explicit_fact")),
+            ]),
+            with_payload=True,
+            limit=200,
         )
         ids_to_delete = [
-            doc_id
-            for doc_id, doc_text in zip(all_facts["ids"], all_facts["documents"])
-            if keyword.lower() in doc_text.lower()
+            r.id for r in records
+            if r.payload and keyword.lower() in r.payload.get("content", "").lower()
         ]
         if ids_to_delete:
-            self.memory_db._collection.delete(ids=ids_to_delete)
+            self.qdrant.delete(
+                collection_name=self.mem_collection,
+                points_selector=PointIdsList(points=ids_to_delete),
+            )
         return len(ids_to_delete)
 
     def wipe_memory(self, user_id: str):
         """Irreversibly delete ALL memory entries (facts + chat history) for this user."""
-        all_mems = self.memory_db.get(where={"user_id": user_id})
-        if all_mems["ids"]:
-            self.memory_db._collection.delete(ids=all_mems["ids"])
+        self.qdrant.delete(
+            collection_name=self.mem_collection,
+            points_selector=FilterSelector(
+                filter=Filter(must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                ])
+            ),
+        )
         self.recent_chat_buffers.pop(user_id, None)
 
     def clear_buffer(self, user_id: str):
@@ -222,48 +245,21 @@ User's Research Question: {question}
     # DOCUMENT COMMANDS (Library CRUD)
     # ==========================================
 
-    def ingest_document(self, file_path: str, original_filename: str) -> dict:
-        """Load a document, split it into chunks, embed, and store in ChromaDB.
+    def ingest_document(self, file_path: str, original_filename: str, user_id: str = "global") -> dict:
+        """Load, clean, chunk, embed, and store a document in Qdrant (non-streaming)."""
+        for event in self.ingest_document_stream(file_path, original_filename, user_id):
+            if event.get("type") == "done":
+                return {"success": True, "chunks": event.get("chunks", 0), "filename": original_filename}
+            if event.get("type") == "error":
+                return {"success": False, "error": event.get("error")}
+        return {"success": False, "error": "Ingest did not complete."}
 
-        Args:
-            file_path: Absolute path to the file on disk.
-            original_filename: The user-facing filename (stored in metadata).
+    def ingest_document_stream(
+        self, file_path: str, original_filename: str, user_id: str = "global",
+    ) -> Generator[dict, None, None]:
+        """Parse, clean, chunk, embed, and upsert a document into Qdrant.
 
-        Returns:
-            Dict with 'success', 'chunks', 'filename' on success,
-            or 'success': False and 'error' message on failure.
-        """
-        if not os.path.exists(file_path):
-            return {"success": False, "error": f"File not found: {file_path}"}
-
-        ext = os.path.splitext(original_filename)[1].lower()
-        if ext == ".pdf":
-            loader = PyPDFLoader(file_path)
-        elif ext == ".txt":
-            loader = TextLoader(file_path, autodetect_encoding=True)
-        elif ext in [".docx", ".doc"]:
-            loader = Docx2txtLoader(file_path)
-        else:
-            return {"success": False, "error": f"Unsupported file type: {ext}"}
-
-        raw_docs = loader.load()
-        if not raw_docs:
-            return {"success": False, "error": "File is empty."}
-
-        chunked_docs = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=200
-        ).split_documents(raw_docs)
-
-        for doc in chunked_docs:
-            doc.metadata["document_name"] = original_filename
-
-        self.vector_db.add_documents(chunked_docs)
-        return {"success": True, "chunks": len(chunked_docs), "filename": original_filename}
-
-    def ingest_document_stream(self, file_path: str, original_filename: str) -> Generator[dict, None, None]:
-        """Load, chunk, and embed a document in batches, yielding progress events.
-
-        Yields event dicts:
+        Yields progress events:
           {"type": "progress", "message": "...", "percent": 0-100}
           {"type": "done", "success": True, "chunks": N, "filename": "..."}
           {"type": "error", "error": "..."}
@@ -286,32 +282,57 @@ User's Research Question: {question}
         yield {"type": "progress", "message": "Parsing document...", "percent": 5}
 
         try:
-            raw_docs = loader.load()
+            pages = loader.load()
         except Exception as e:
             yield {"type": "error", "error": f"Failed to parse document: {e}"}
             return
 
-        if not raw_docs:
+        if not pages:
             yield {"type": "error", "error": "File is empty."}
             return
 
-        yield {"type": "progress", "message": f"Parsed {len(raw_docs)} pages. Chunking...", "percent": 15}
+        yield {"type": "progress", "message": f"Parsed {len(pages)} pages. Cleaning...", "percent": 10}
 
-        chunked_docs = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=200
-        ).split_documents(raw_docs)
+        # Stable document ID so chunk IDs are deterministic on re-uploads
+        doc_id = hashlib.md5(f"{user_id}:{original_filename}".encode()).hexdigest()
+        full_content = "\n\n".join(p.page_content for p in pages)
+        cleaned_content = clean_text(full_content)
 
-        for doc in chunked_docs:
-            doc.metadata["document_name"] = original_filename
+        yield {"type": "progress", "message": "Chunking...", "percent": 15}
 
-        total = len(chunked_docs)
-        batch_size = 50
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=512, chunk_overlap=64,
+            separators=["\n\n", "\n", ". ", " ", ""],
+        )
+        texts = splitter.split_text(cleaned_content)
+
+        if not texts:
+            yield {"type": "error", "error": "Document produced no text after cleaning."}
+            return
+
+        total = len(texts)
         yield {"type": "progress", "message": f"Embedding {total} chunks...", "percent": 20}
 
-        for i in range(0, total, batch_size):
-            batch = chunked_docs[i : i + batch_size]
-            self.vector_db.add_documents(batch)
-            done_count = min(i + batch_size, total)
+        for i in range(0, total, UPSERT_BATCH_SIZE):
+            batch_texts = texts[i : i + UPSERT_BATCH_SIZE]
+            batch_vectors = self.embedding_model.embed_documents(batch_texts)
+            points = [
+                PointStruct(
+                    id=hashlib.md5(f"{doc_id}:{i + j}".encode()).hexdigest(),
+                    vector=vec,
+                    payload={
+                        "content": text,
+                        "source": original_filename,
+                        "document_name": original_filename,
+                        "user_id": user_id,
+                        "chunk_index": i + j,
+                        "document_id": doc_id,
+                    },
+                )
+                for j, (text, vec) in enumerate(zip(batch_texts, batch_vectors))
+            ]
+            self.qdrant.upsert(collection_name=self.doc_collection, points=points, wait=True)
+            done_count = min(i + UPSERT_BATCH_SIZE, total)
             pct = 20 + int(80 * done_count / total)
             yield {
                 "type": "progress",
@@ -322,27 +343,49 @@ User's Research Question: {question}
         yield {"type": "done", "success": True, "chunks": total, "filename": original_filename}
 
     def remove_document(self, filename: str) -> bool:
-        """Remove all chunks belonging to a document. Returns True if found and deleted."""
-        existing = self.vector_db.get(where={"document_name": filename})
-        if not existing["ids"]:
+        """Remove all chunks for a document from Qdrant. Returns True if found and deleted."""
+        results, _ = self.qdrant.scroll(
+            collection_name=self.doc_collection,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="document_name", match=MatchValue(value=filename))
+            ]),
+            limit=1,
+            with_payload=False,
+        )
+        if not results:
             return False
-        self.vector_db._collection.delete(where={"document_name": filename})
+        self.qdrant.delete(
+            collection_name=self.doc_collection,
+            points_selector=FilterSelector(
+                filter=Filter(must=[
+                    FieldCondition(key="document_name", match=MatchValue(value=filename))
+                ])
+            ),
+        )
         return True
 
     def list_documents(self) -> List[str]:
-        """Return a sorted list of unique document filenames in the library."""
-        unique_docs = set()
-        offset, batch_size = 0, 1000
+        """Return a sorted list of unique document filenames from Qdrant."""
+        unique_docs: set = set()
+        offset = None
         while True:
-            batch = self.vector_db.get(limit=batch_size, offset=offset)
-            if not batch["ids"]:
+            records, offset = self.qdrant.scroll(
+                collection_name=self.doc_collection,
+                offset=offset,
+                limit=1000,
+                with_payload=["document_name", "source"],
+                with_vectors=False,
+            )
+            if not records:
                 break
-            for meta in batch["metadatas"]:
-                if meta and "document_name" in meta:
-                    unique_docs.add(meta["document_name"])
-                elif meta and "source" in meta:
-                    unique_docs.add(os.path.basename(meta["source"]))
-            offset += batch_size
+            for r in records:
+                if not r.payload:
+                    continue
+                name = r.payload.get("document_name") or r.payload.get("source")
+                if name:
+                    unique_docs.add(os.path.basename(name))
+            if offset is None:
+                break
         return sorted(unique_docs)
 
     # ==========================================
@@ -1109,9 +1152,20 @@ User's Research Question: {question}
         # 2. Retrieve memory
         chat_history_str = "Memory search disabled."
         if use_memory:
-            memory_docs = self.memory_db.similarity_search(standalone_query, k=2)
-            if memory_docs:
-                chat_history_str = "\n\n".join([d.page_content for d in memory_docs])
+            mem_results = self.qdrant.search(
+                collection_name=self.mem_collection,
+                query_vector=self.embedding_model.embed_query(standalone_query),
+                query_filter=Filter(must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id))
+                ]),
+                limit=3,
+                with_payload=True,
+            )
+            if mem_results:
+                chat_history_str = "\n\n".join(
+                    r.payload["content"] for r in mem_results
+                    if r.payload and "content" in r.payload
+                )
 
         # Inject folder context so the QA chain can reference sibling chats
         if folder_context:
@@ -1127,9 +1181,20 @@ User's Research Question: {question}
             except Exception as e:
                 context_str = f"Web search failed: {e}"
         elif use_library:
-            library_docs = self.vector_db.similarity_search(standalone_query, k=3)
+            library_docs = self.qdrant.search(
+                collection_name=self.doc_collection,
+                query_vector=self.embedding_model.embed_query(standalone_query),
+                query_filter=Filter(must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id))
+                ]),
+                limit=3,
+                with_payload=True,
+            )
             if library_docs:
-                context_str = "\n\n".join([d.page_content for d in library_docs])
+                context_str = "\n\n".join(
+                    r.payload["content"] for r in library_docs
+                    if r.payload and "content" in r.payload
+                )
 
         # 4. Stream answer
         ai_answer = ""
@@ -1159,21 +1224,32 @@ User's Research Question: {question}
         if force_web:
             sources.append("Live Internet Search (DuckDuckGo)")
         elif library_docs and use_library:
-            for doc in library_docs:
+            for r in library_docs:
+                payload = r.payload or {}
                 sources.append(
-                    f"{doc.metadata.get('source', doc.metadata.get('document_name', 'Unknown'))} "
-                    f"(Page {doc.metadata.get('page', 'N/A')})"
+                    f"{payload.get('source', payload.get('document_name', 'Unknown'))} "
+                    f"(chunk {payload.get('chunk_index', 'N/A')})"
                 )
 
         yield {"type": "sources", "sources": sources}
 
         # 7. Save to memory
         if use_library and use_memory and not force_web:
-            self.memory_db.add_texts(
-                texts=[f"User asked: {query}", f"AI answered: {ai_answer}"],
-                metadatas=[
-                    {"role": "user", "user_id": user_id},
-                    {"role": "assistant", "user_id": user_id},
+            user_vec = self.embedding_model.embed_query(f"User asked: {query}")
+            ai_vec = self.embedding_model.embed_query(f"AI answered: {ai_answer}")
+            self.qdrant.upsert(
+                collection_name=self.mem_collection,
+                points=[
+                    PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=user_vec,
+                        payload={"content": f"User asked: {query}", "user_id": user_id, "role": "user", "type": "chat_history"},
+                    ),
+                    PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=ai_vec,
+                        payload={"content": f"AI answered: {ai_answer}", "user_id": user_id, "role": "assistant", "type": "chat_history"},
+                    ),
                 ],
             )
 
