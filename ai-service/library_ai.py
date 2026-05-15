@@ -1,7 +1,14 @@
 """
 library_ai.py — Core AI engine for LibraryAI.
 
-Phase 3 refactor: ChromaDB replaced with Qdrant.
+Phase 7 refactor: inference_mode-aware LLM selection.
+  - inference_mode="ollama"       → OllamaLLM (local Ollama server, default)
+  - inference_mode="huggingface"  → HF text-generation pipeline loaded from
+                                     settings.finetuned_model_id (adapter path
+                                     or HF repo).  Base model loaded in 4-bit
+                                     NF4 QLoRA for RTX 3070 Ti 8 GB.
+
+Phase 3 Qdrant migration:
   - Document store:  Qdrant collection 'library_ai'  (per-user filter by user_id)
   - Memory store:    Qdrant collection 'chat_memory' (per-user filter by user_id)
   - Ingest:          inline pipeline steps (clean → chunk → embed → upsert)
@@ -18,6 +25,7 @@ import logging
 from typing import Tuple, List, Dict, Generator, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
+import jinja2
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import PromptTemplate
@@ -39,15 +47,21 @@ logger = logging.getLogger(__name__)
 
 class LibraryAI:
     def __init__(self, ollama_base_url: str = "http://localhost:11434"):
-        """Initialize the AI engine with connections to Qdrant, Ollama, and HuggingFace.
+        """Initialize the AI engine.
+
+        The LLM backend is selected from settings.inference_mode:
+          - "ollama"       → OllamaLLM pointing at ollama_base_url
+          - "huggingface"  → local HF pipeline (fine-tuned adapter loaded in 4-bit)
 
         Args:
-            ollama_base_url: Base URL of the Ollama server (e.g. http://localhost:11434).
+            ollama_base_url: Base URL of the Ollama server (used when
+                             inference_mode="ollama" or as fallback).
         """
         settings = get_settings()
         self.embedding_model = HuggingFaceEmbeddings(
             model_name="BAAI/bge-large-en-v1.5",
             model_kwargs={"device": settings.embed_device},
+            encode_kwargs={"normalize_embeddings": True},
         )
 
         self.qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
@@ -58,11 +72,123 @@ class LibraryAI:
         _ensure_collection(self.qdrant, self.doc_collection)
         _ensure_collection(self.qdrant, self.mem_collection)
 
-        self.llm = OllamaLLM(model="mannix/llama3.1-8b-abliterated", base_url=ollama_base_url)
-        self.web_search = DuckDuckGoSearchRun()
+        # ── LLM backend selection (Phase 7) ───────────────────────────────────
+        mode = settings.inference_mode.lower()
+        if mode == "huggingface":
+            self.llm = self._build_hf_llm(settings)
+            logger.info("Inference mode: HuggingFace (model=%s)", settings.finetuned_model_id or settings.base_model_id)
+        else:
+            if mode not in ("ollama",):
+                logger.warning("Unknown inference_mode=%r, falling back to ollama.", mode)
+            self.llm = OllamaLLM(
+                model="mannix/llama3.1-8b-abliterated",
+                base_url=ollama_base_url,
+            )
+            logger.info("Inference mode: Ollama (%s)", ollama_base_url)
 
+        self.web_search = DuckDuckGoSearchRun()
         self.recent_chat_buffers: Dict[str, List[str]] = {}
+
+        # ── Jinja2 templates (Phase 8) ──────────────────────────────────────────
+        _templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+        self._jinja_env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(_templates_dir),
+            autoescape=False,
+            keep_trailing_newline=True,
+        )
+
+        # ── Opik tracing (Phase 8) ───────────────────────────────────────────
+        self._opik_client = None
+        if settings.opik_api_key:
+            try:
+                import opik as _opik
+                _opik.configure(
+                    api_key=settings.opik_api_key,
+                    project_name=settings.opik_project_name,
+                    use_local=False,
+                )
+                self._opik_client = _opik.Opik()
+                logger.info("Opik tracing enabled (project=%s)", settings.opik_project_name)
+            except Exception as exc:
+                logger.warning("Opik init failed: %s — tracing disabled.", exc)
+
         self._setup_chains()
+
+    # ── Phase 7: HuggingFace inference backend ────────────────────────────────
+
+    @staticmethod
+    def _build_hf_llm(settings):
+        """Load the fine-tuned model (or base model) as a LangChain-compatible LLM.
+
+        Memory strategy for RTX 3070 Ti 8 GB:
+          - 4-bit NF4 quantisation via bitsandbytes
+          - PEFT adapter merged in-place so no runtime LoRA overhead
+          - max_new_tokens=512 to fit within VRAM budget
+
+        Returns a LangChain BaseLLM wrapping a HuggingFace text-generation pipeline.
+        """
+        import torch
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            pipeline as hf_pipeline,
+        )
+        from langchain_huggingface import HuggingFacePipeline
+
+        hf_token = settings.huggingface_access_token or None
+
+        # Resolve which weights to load
+        adapter_path = settings.finetuned_model_id or None
+        is_local_adapter = adapter_path and os.path.isdir(adapter_path)
+        base_id = settings.base_model_id
+
+        logger.info(
+            "Loading HF model: base=%s  adapter=%s",
+            base_id, adapter_path or "(none — base model only)",
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_id, token=hf_token, trust_remote_code=True
+        )
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
+
+        bnb = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            base_id,
+            quantization_config=bnb,
+            device_map="auto",
+            token=hf_token,
+            trust_remote_code=True,
+        )
+
+        if adapter_path:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, adapter_path)
+            model = model.merge_and_unload()   # merge LoRA weights → no runtime overhead
+            logger.info("LoRA adapter merged from %s", adapter_path)
+
+        model.eval()
+
+        pipe = hf_pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=512,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            repetition_penalty=1.1,
+            return_full_text=False,    # return only the generated continuation
+        )
+
+        return HuggingFacePipeline(pipeline=pipe)
 
     def _setup_chains(self):
         """Configure LangChain prompt templates and chain pipelines.
@@ -104,51 +230,58 @@ class LibraryAI:
         Question: {question}
         Helpful Answer:"""
 
-        self.rephrase_chain = PromptTemplate.from_template(rephrase_template) | self.llm
-        self.qa_chain = PromptTemplate.from_template(qa_template) | self.llm
+        # chains are now built from Jinja2 .j2 template files (Phase 8)
+        self.rephrase_chain = self._j2_chain("rephrase")
+        self.qa_chain = self._j2_chain("qa")
+        self.research_query_chain = self._j2_chain("research_query")
+        self.research_chain = self._j2_chain("research_synthesis")
 
-        # --- Research: clean query extraction ---
-        research_query_template = """You are a research librarian. Convert this user request into 2-3 clean academic search queries.
+    def _j2_chain(self, template_name: str):
+        """Return an LCEL chain: Jinja2-rendered prompt → LLM.
 
-RULES:
-- Strip meta-instructions like "find papers about", "get me sources on", "I need research on"
-- Do NOT number them, do NOT add bullets or explanation
-- Output ONLY the queries, one per line
-- Preserve important named entities, locations, and technical terms.
+        Accepts a dict of template variables.  Both .invoke({...}) and
+        .stream({...}) work transparently — the lambda renders the
+        Jinja2 template to a plain string, then the LLM step runs/streams.
+        """
+        from langchain_core.runnables import RunnableLambda
+        tmpl = self._jinja_env.get_template(f"{template_name}.j2")
+        return RunnableLambda(lambda kv: tmpl.render(**kv)) | self.llm
 
-Recent context: {recent_history}
-User request: {question}
-Search queries:"""
+    # ── Opik trace helpers (Phase 8) ──────────────────────────────────────────
 
-        self.research_query_chain = PromptTemplate.from_template(research_query_template) | self.llm
+    def _trace_start(self, name: str, input_data: dict):
+        """Start an Opik trace if the client is configured, else return None."""
+        if self._opik_client:
+            try:
+                return self._opik_client.trace(name=name, input=input_data)
+            except Exception as exc:
+                logger.warning("Opik trace start failed: %s", exc)
+        return None
 
-        # --- Research: synthesis from papers ---
-        research_template = """You are an expert academic research analyst synthesizing findings from scientific papers to learn and further your research.
+    def _trace_end(self, trace, output_data: dict):
+        """End an Opik trace (no-op if trace is None)."""
+        if trace:
+            try:
+                trace.end(output=output_data)
+            except Exception as exc:
+                logger.warning("Opik trace end failed: %s", exc)
 
-RECENT CONVERSATION:
-{recent_history}
+    def _span_start(self, trace, name: str, input_data: dict):
+        """Add a child span to an Opik trace (no-op if trace is None)."""
+        if trace:
+            try:
+                return trace.span(name=name, input=input_data)
+            except Exception as exc:
+                logger.warning("Opik span start failed: %s", exc)
+        return None
 
-PAPERS FOUND:
-{papers_context}
-
-INSTRUCTIONS:
-- Write a comprehensive, well-structured research overview that answers the user's question.
-- Use markdown formatting with clear section headers (##).
-- Organize into sections if appropriate.
-- If used, reference specific papers using their number in square brackets, e.g. [1], [2], [3]. These numbers correspond to the paper numbers listed above.
-- Include specific numbers, metrics, benchmarks, and technical details from paper abstracts as fit.
-- Compare and contrast different approaches across papers.
-- If papers only partially cover the topic, clearly note what gaps remain.
-- Use the recent conversation to understand context, follow-up references, and pronouns.
-- Be thorough but concise.
-- Do NOT invent facts not present in the papers.
-- You can use information from ANY of the papers, even if not the top result, to construct your answer.
-
-User's Research Question: {question}
-
-## Research Overview"""
-
-        self.research_chain = PromptTemplate.from_template(research_template) | self.llm
+    def _span_end(self, span, output_data: dict):
+        """End an Opik span (no-op if span is None)."""
+        if span:
+            try:
+                span.end(output=output_data)
+            except Exception as exc:
+                logger.warning("Opik span end failed: %s", exc)
 
     # ==========================================
     # PER-USER SHORT-TERM BUFFER
@@ -1149,6 +1282,14 @@ User's Research Question: {question}
         ).strip()
         yield {"type": "debug", "standalone_query": standalone_query}
 
+        # ── Opik trace: wraps retrieval + generation ─────────────────────────
+        _trace = self._trace_start("rag_query", {
+            "user_id": user_id,
+            "query": query,
+            "standalone_query": standalone_query,
+            "mode": "web" if force_web else ("library" if use_library else "memory"),
+        })
+
         # 2. Retrieve memory
         chat_history_str = "Memory search disabled."
         if use_memory:
@@ -1174,6 +1315,7 @@ User's Research Question: {question}
         # 3. Retrieve library / web
         context_str = "Library search disabled."
         library_docs = []
+        _retrieval_span = self._span_start(_trace, "qdrant_retrieval", {"query": standalone_query})
         if force_web:
             yield {"type": "status", "message": "Searching the web..."}
             try:
@@ -1195,14 +1337,23 @@ User's Research Question: {question}
                     r.payload["content"] for r in library_docs
                     if r.payload and "content" in r.payload
                 )
+        self._span_end(_retrieval_span, {
+            "source": "web" if force_web else "qdrant",
+            "n_docs": len(library_docs),
+        })
 
         # 4. Stream answer
+        _gen_span = self._span_start(_trace, "llm_generation", {
+            "model": getattr(self.llm, "model", type(self.llm).__name__),
+            "context_chars": len(context_str),
+        })
         ai_answer = ""
         for chunk in self.qa_chain.stream(
             {"question": standalone_query, "context": context_str, "chat_history": chat_history_str}
         ):
             ai_answer += chunk
             yield {"type": "token", "content": chunk}
+        self._span_end(_gen_span, {"answer_chars": len(ai_answer)})
 
         # 5. Fallback to web if AI can't answer
         if "I cannot find the answer" in ai_answer and not force_web:
@@ -1256,4 +1407,5 @@ User's Research Question: {question}
         self._update_buffer(user_id, f"User: {query}")
         self._update_buffer(user_id, f"AI: {ai_answer}")
 
+        self._trace_end(_trace, {"answer_preview": ai_answer[:300]})
         yield {"type": "done"}
