@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     dpo_max_samples: int = 500
     dpo_output_dir: str = "./models/dpo"
 
+    # --- Evaluation (Phase 6) ---
+    eval_sample_size: int = 100          # number of QA pairs to evaluate
+    eval_output_dir: str = "./evals"     # JSON results written here
+    eval_llm: str = "mannix/llama3.1-8b-abliterated"   # Ollama model used as RAGAS judge LLM
+    eval_embeddings_model: str = "BAAI/bge-large-en-v1.5"  # RAGAS embeddings
+
     # --- Inference mode ---
     # "ollama"       → current local Ollama server (Phase 1)
     # "huggingface"  → HF pipeline with local / fine-tuned weights (Phase 7)
