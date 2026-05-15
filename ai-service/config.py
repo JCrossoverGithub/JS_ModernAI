@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     base_model_id: str = "meta-llama/Llama-3.1-8B-Instruct"
     finetuned_model_id: str = ""
 
+    # --- SFT training hyperparams (Phase 4) ---
+    # Tuned for RTX 3070 Ti 8GB VRAM: 4-bit QLoRA, batch=1, grad_accum=4
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    sft_epochs: int = 3
+    sft_batch_size: int = 1
+    sft_grad_accum: int = 4
+    sft_max_seq_length: int = 512
+    sft_output_dir: str = "./models/sft"
+    sft_max_samples: int = 1000
+
     # --- Inference mode ---
     # "ollama"       → current local Ollama server (Phase 1)
     # "huggingface"  → HF pipeline with local / fine-tuned weights (Phase 7)
