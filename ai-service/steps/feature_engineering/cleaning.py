@@ -67,6 +67,7 @@ def clean_documents(documents: list[RawDocument]) -> list[CleanedDocument]:
                 continue
             cleaned.append(
                 CleanedDocument(
+                    id=doc.id,  # inherit parent ID so downstream chunk IDs are stable
                     raw_document_id=doc.id,
                     content=clean_content,
                     source=doc.source,

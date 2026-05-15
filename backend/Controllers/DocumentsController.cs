@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Backend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -31,12 +32,14 @@ public class DocumentsController : ControllerBase
             return;
         }
 
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "global";
+
         Response.ContentType = "text/event-stream";
         Response.Headers["Cache-Control"] = "no-cache";
         Response.Headers["Connection"] = "keep-alive";
 
         using var stream = file.OpenReadStream();
-        await _ai.UploadDocumentAsync(stream, file.FileName, async (json) =>
+        await _ai.UploadDocumentAsync(stream, file.FileName, userId, async (json) =>
         {
             await Response.WriteAsync($"data: {json}\n\n");
             await Response.Body.FlushAsync();

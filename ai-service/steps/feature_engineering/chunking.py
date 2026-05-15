@@ -8,6 +8,8 @@ Chapter 4 (RAG Feature Pipeline):
 Phase 3 will add semantic / sentence-window chunking variants.
 """
 
+import hashlib
+
 from loguru import logger
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from zenml import step
@@ -37,8 +39,11 @@ def chunk_documents(
     for doc in documents:
         texts = splitter.split_text(doc.content)
         for idx, text in enumerate(texts):
+            # Deterministic ID so Qdrant upsert is idempotent on re-runs
+            chunk_id = hashlib.md5(f"{doc.id}:{idx}".encode()).hexdigest()
             chunks.append(
                 DocumentChunk(
+                    id=chunk_id,
                     document_id=doc.id,
                     content=text,
                     chunk_index=idx,

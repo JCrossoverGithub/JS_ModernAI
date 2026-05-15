@@ -121,12 +121,13 @@ public class PythonAIService
     /// for progress tracking. This method reads the stream, forwarding progress events via the
     /// optional callback, and returns the final result JSON.
     /// </summary>
-    public async Task<string> UploadDocumentAsync(Stream fileStream, string fileName, Func<string, Task>? onProgress = null)
+    public async Task<string> UploadDocumentAsync(Stream fileStream, string fileName, string userId, Func<string, Task>? onProgress = null)
     {
         using var content = new MultipartFormDataContent();
         var fileContent = new StreamContent(fileStream);
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(fileContent, "file", fileName);
+        content.Add(new StringContent(userId), "user_id");
 
         using var response = await _http.SendAsync(
             new HttpRequestMessage(HttpMethod.Post, "/documents/upload") { Content = content },

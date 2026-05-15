@@ -16,22 +16,24 @@ from models.documents import RawDocument
 
 @step
 def load_raw_documents(author_id: str) -> list[RawDocument]:
-    """Load all raw documents for *author_id* from the MongoDB data warehouse.
+    """Load all raw documents for *author_id* from the MongoDB data warehouse."""
+    from db.mongo import raw_documents_collection, ping
 
-    Phase 2 TODO:
-        from config import get_settings
-        from pymongo import MongoClient
+    if not ping():
+        logger.error("load_raw_documents: MongoDB unreachable — returning empty list.")
+        return []
 
-        settings = get_settings()
-        client = MongoClient(settings.mongodb_uri)
-        col = client[settings.mongodb_database]["raw_documents"]
-        docs = list(col.find({"user_id": author_id}))
-        return [RawDocument(**d) for d in docs]
-    """
-    logger.warning(
-        "load_raw_documents: MongoDB not yet connected (Phase 2). Returning empty list."
-    )
-    return []
+    col = raw_documents_collection()
+    cursor = col.find({"user_id": author_id}, {"_id": 0})
+    docs: list[RawDocument] = []
+    for record in cursor:
+        try:
+            docs.append(RawDocument(**record))
+        except Exception as exc:
+            logger.warning("Skipping malformed record %s: %s", record.get("id"), exc)
+
+    logger.info("Loaded %d raw documents for author_id='%s'.", len(docs), author_id)
+    return docs
 
 
 # ---------------------------------------------------------------------------

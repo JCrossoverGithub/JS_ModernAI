@@ -243,7 +243,7 @@ ai-service/
     ├── qa.j2                   #   Main QA prompt
     ├── rephrase.j2             #   Query rephrase / standalone question
     ├── research_query.j2       #   Academic search query extraction
-    └── research_synthesis.j2  #   Research paper synthesis
+    └── research_synthesis.j2   #   Research paper synthesis
 ```
 
 ---
