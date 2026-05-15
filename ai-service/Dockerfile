@@ -2,17 +2,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system deps for torch/CUDA (CPU fallback in container)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential && \
+    build-essential curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-
-# Install PyTorch with CUDA support (still works on CPU if EMBED_DEVICE=cpu)
+# Install PyTorch with CUDA 12.6 support BEFORE Poetry resolves other deps,
+# so Poetry sees an already-satisfied torch and skips the CPU wheel from PyPI.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu126
 
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Poetry
+RUN pip install --no-cache-dir "poetry==1.8.3"
+
+# Copy dependency manifests only (enables layer caching on code changes)
+COPY pyproject.toml poetry.lock* ./
+
+# Install all non-dev dependencies without creating a virtualenv inside the container
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --without dev --no-root
 
 COPY . .
 

@@ -1,0 +1,106 @@
+[tool.poetry]
+name = "llm-twin-ai-service"
+version = "0.1.0"
+description = "AI service following LLM Engineer's Handbook architecture"
+authors = []
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+
+# --- Web serving ---
+fastapi = ">=0.115.0"
+uvicorn = { version = ">=0.30.0", extras = ["standard"] }
+python-multipart = ">=0.0.9"
+
+# --- Configuration ---
+pydantic = ">=2.0.0"
+pydantic-settings = ">=2.2.0"
+
+# --- LangChain ecosystem ---
+langchain = ">=0.3.0"
+langchain-community = ">=0.3.0"
+langchain-text-splitters = ">=0.3.0"
+langchain-huggingface = ">=0.1.0"
+langchain-qdrant = ">=0.2.0"
+langchain-ollama = ">=0.3.0"       # kept for Phase 1 backward compat
+
+# --- Vector DB: Qdrant (replaces ChromaDB) ---
+qdrant-client = ">=1.12.0"
+
+# --- Data warehouse: MongoDB ---
+pymongo = ">=4.7.0"
+motor = ">=3.4.0"                  # async MongoDB driver
+
+# --- Embeddings ---
+sentence-transformers = ">=3.0.0"
+
+# --- HuggingFace / Training (Phases 4-6) ---
+transformers = ">=4.45.0"
+datasets = ">=3.0.0"
+accelerate = ">=1.0.0"
+peft = ">=0.13.0"
+trl = ">=0.12.0"
+bitsandbytes = ">=0.44.0"
+# torch installed separately via pip --index-url for CUDA; listed here for resolution
+torch = ">=2.3.0"
+
+# --- Pipeline orchestration ---
+zenml = ">=0.62.0"
+
+# --- Document loaders ---
+pypdf = ">=3.0.0"
+docx2txt = ">=0.8"
+python-docx = ">=1.0.0"
+beautifulsoup4 = ">=4.12.0"
+html2text = ">=2020.1.16"
+
+# --- Web search ---
+duckduckgo-search = ">=6.0.0"
+
+# --- HTTP ---
+httpx = ">=0.27.0"
+
+# --- Templating & tokenisation ---
+jinja2 = ">=3.1.0"
+tiktoken = ">=0.7.0"
+
+# --- Monitoring & experiment tracking (Phases 7-11) ---
+opik = ">=1.0.0"
+comet-ml = ">=3.43.0"
+
+# --- Logging ---
+loguru = ">=0.7.0"
+
+[tool.poetry.group.dev.dependencies]
+ruff = ">=0.5.0"
+mypy = ">=1.10.0"
+pytest = ">=8.0.0"
+pytest-asyncio = ">=0.23.0"
+httpx = ">=0.27.0"   # for FastAPI TestClient
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+# ---------------------------------------------------------------------------
+# Tooling config
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

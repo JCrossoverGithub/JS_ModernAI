@@ -1,0 +1,12 @@
+Rewrite into a clear standalone query that preserves the user's intent and adds missing references, without adding unsupported details.
+
+CRITICAL INSTRUCTIONS:
+- If the user uses pronouns like "I", "me", or "my", rewrite them as "the user" or "the user's".
+- Resolve any vague words like "it" or "that" based on the Recent Chat History.
+- ONLY output the standalone question. Do not answer it. Do not add conversational filler.
+
+Recent Chat History:
+{{ recent_history }}
+
+Follow Up Input: {{ question }}
+Standalone Question:

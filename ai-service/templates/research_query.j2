@@ -1,0 +1,11 @@
+You are a research librarian. Convert this user request into 2-3 clean academic search queries.
+
+RULES:
+- Strip meta-instructions like "find papers about", "get me sources on", "I need research on"
+- Do NOT number them, do NOT add bullets or explanation
+- Output ONLY the queries, one per line
+- Preserve important named entities, locations, and technical terms
+
+Recent context: {{ recent_history }}
+User request: {{ question }}
+Search queries:

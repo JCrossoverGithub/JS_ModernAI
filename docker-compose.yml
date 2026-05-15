@@ -1,4 +1,25 @@
 services:
+  # --- Qdrant vector database (replaces ChromaDB) ---
+  qdrant:
+    image: qdrant/qdrant:v1.12.0
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+  # --- MongoDB data warehouse ---
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=llm_twin
+    volumes:
+      - mongodb-data:/data/db
+    restart: unless-stopped
+
   # --- React Frontend (nginx in prod, dev server in dev) ---
   frontend:
     build: ./frontend
@@ -31,23 +52,39 @@ services:
     ports:
       - "8100:8100"
     environment:
+      # Legacy (Phase 1 — removed in Phase 3)
       - CHROMA_DIR=/data/chroma_db
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Serving
       - CORS_ORIGIN=http://backend:5000
       - UPLOAD_DIR=/data/uploads
-      - EMBED_DEVICE=cpu              # set to 'cpu' if no NVIDIA GPU
+      - EMBED_DEVICE=cuda             # RTX 3070 Ti — set to 'cpu' if no GPU
       - HF_HOME=/data/hf_cache
+      # Qdrant (Phase 3+)
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      # MongoDB (Phase 2+)
+      - MONGODB_URI=mongodb://mongodb:27017
+      - MONGODB_DATABASE=llm_twin
+      # HuggingFace (Phase 4+)
+      - HUGGINGFACE_ACCESS_TOKEN=${HUGGINGFACE_ACCESS_TOKEN:-}
+      # Inference mode: ollama | huggingface | sagemaker
+      - INFERENCE_MODE=ollama
     volumes:
       - ai-data:/data
-    # For GPU access (NVIDIA), uncomment:
+    depends_on:
+      - qdrant
+      - mongodb
     deploy:
-     resources:
-      reservations:
-       devices:
-        - driver: nvidia
-          count: 1
-          capabilities: [gpu]
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 volumes:
   backend-data:
   ai-data:
+  qdrant-data:
+  mongodb-data:

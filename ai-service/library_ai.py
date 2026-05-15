@@ -1047,7 +1047,6 @@ User's Research Question: {question}
                 papers_context += f"Abstract: {p['abstract'][:500]}\n"
 
         # 7. Stream LLM synthesis
-        web_source_list: List[str] = []
         ai_answer = ""
         for chunk in self.research_chain.stream(
             {"question": query, "recent_history": recent_history_str, "papers_context": papers_context}
@@ -1055,68 +1054,16 @@ User's Research Question: {question}
             ai_answer += chunk
             yield {"type": "token", "content": chunk}
 
-        # 8. Web supplementation — fill gaps the papers didn't cover
-        try:
-            gap_check = self.llm.invoke(
-                f"Based on this research answer and the original question, are there significant "
-                f"gaps or missing information that web sources could fill?\n\n"
-                f"Question: {query}\n\n"
-                f"Answer (first 600 chars): {ai_answer[:600]}\n\n"
-                f"Reply with ONLY 'YES: <brief description of gaps>' or 'NO'."
-            ).strip()
-
-            if gap_check.upper().startswith("YES"):
-                gap_description = gap_check[4:].strip(": ")
-                yield {"type": "status", "message": "Supplementing with web sources..."}
-                web_snippets = []
-
-                # DuckDuckGo
-                try:
-                    ddg = self.web_search.invoke(f"{query} {gap_description}")
-                    if ddg:
-                        web_snippets.append(f"[DuckDuckGo Results]\n{ddg}")
-                except Exception as e:
-                    logger.warning("DuckDuckGo supplement failed: %s", e)
-
-                # Wikipedia
-                try:
-                    wiki = self.web_search.invoke(f"{query} site:wikipedia.org")
-                    if wiki:
-                        web_snippets.append(f"[Wikipedia Results]\n{wiki}")
-                except Exception as e:
-                    logger.warning("Wikipedia supplement failed: %s", e)
-
-                if web_snippets:
-                    supplement_context = "\n\n".join(web_snippets)
-                    supplement_prompt = (
-                        f"You previously wrote a research overview about: {query}\n\n"
-                        f"The academic papers only partially covered the topic. "
-                        f"Here is additional information from web sources:\n\n"
-                        f"{supplement_context}\n\n"
-                        f"Write a brief supplementary section (using markdown) that fills in "
-                        f"the gaps with this web-sourced information. Start with "
-                        f"'\\n\\n## Additional Context from Web Sources\\n\\n' "
-                        f"and keep it concise. Clearly note these are from web sources, not "
-                        f"peer-reviewed papers. Do NOT repeat information already covered."
-                    )
-                    for chunk in self.llm.stream(supplement_prompt):
-                        ai_answer += chunk
-                        yield {"type": "token", "content": chunk}
-                    web_source_list.extend(["DuckDuckGo Web Search", "Wikipedia"])
-        except Exception as e:
-            logger.warning("Web supplementation check failed: %s", e)
-
-        # 9. Sources
-        source_list = []
+        # 8. Sources
+        sources = []
         for p in all_papers:
             src = p["title"]
             if p["year"]:
                 src += f" ({p['year']})"
-            source_list.append(src)
-        source_list.extend(web_source_list)
-        yield {"type": "sources", "sources": source_list}
+            sources.append(src)
+        yield {"type": "sources", "sources": sources}
 
-        # 10. Update buffer
+        # 9. Update buffer
         self._update_buffer(user_id, f"User: {query}")
         self._update_buffer(user_id, f"AI: {ai_answer[:200]}...")
 
